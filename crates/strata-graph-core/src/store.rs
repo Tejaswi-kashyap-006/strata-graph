@@ -7,9 +7,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 
 use crate::graph::{FileInfo, Graph};
 use crate::lang::ParsedFile;
@@ -117,6 +118,9 @@ fn parse_tier(s: &str) -> Result<Tier> {
     })
 }
 
+/// How long to wait for another process's write before giving up.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl Store {
     /// Open (creating if needed) the store at `path`. A store written by an
     /// older version is wiped and rebuilt on the next update.
@@ -125,6 +129,10 @@ impl Store {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // Hooks, the MCP server and the CLI can update one index at the same
+        // time. rusqlite waits 5 s by default, less than a cold index of a
+        // large repo takes, so wait longer before failing with SQLITE_BUSY.
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
@@ -233,7 +241,11 @@ impl Store {
         graph: &Graph,
         config_key: &str,
     ) -> Result<()> {
-        let tx = self.conn.transaction()?;
+        // IMMEDIATE takes the write lock up front, so a later statement in
+        // this transaction can never fail by upgrading a read lock.
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         {
             let mut put = tx.prepare(
                 "INSERT OR REPLACE INTO files(path, hash, module, mtime_ns, size, facts)

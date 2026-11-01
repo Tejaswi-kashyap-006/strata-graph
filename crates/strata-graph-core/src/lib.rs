@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod annotate;
 pub mod config;
 pub mod context;
 pub mod graph;

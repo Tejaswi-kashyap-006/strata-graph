@@ -2,7 +2,7 @@
 
 A code graph for coding agents. strata-graph parses a Python, TypeScript or JavaScript repository into a graph of modules, classes, functions and the calls, imports and inheritance between them. Every edge carries a confidence tier, so an agent can see who calls what, and how sure that answer is, without reading files to find out.
 
-> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI, a Python SDK and an MCP server work today. Next: Claude Code / Codex hooks that deliver the graph inside what agents already read. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md).
+> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI, a Python SDK, an MCP server and Claude Code / Codex hooks work today. Next: adaptive delivery and the public eval against grep-only agents. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md), [week 3: delivery](docs/gates/week-3-delivery.md).
 
 ## Why
 
@@ -61,6 +61,29 @@ codex mcp add strata-graph -- strata-graph --root . mcp
 
 The server speaks MCP 2024-11-05 through 2025-11-25 with the usual `initialize` handshake, and the stateless 2026-07-28 revision (`server/discover`, version in `_meta`). Logs go to stderr. On django, the first call after start takes about 0.3 s and later calls about 60 ms.
 
+## Agent hooks
+
+Agents rarely call an optional tool, so strata-graph also puts graph facts into the results they already read. After a file read or a code search, a hook adds a few lines about the definitions involved:
+
+```text
+[strata-graph] django/utils/text.py:470-529
+L481-498 slugify (function): called by 2: django.template.defaultfilters.slugify T1, utils_tests.test_text.TestUtilsText.test_slugify T1
+L501-505 camel_case_to_spaces (function): called by 1: django.db.models.options.Options.contribute_to_class T1
+```
+
+```sh
+strata-graph install-hooks --agent claude   # adds hooks to .claude/settings.json (--local for settings.local.json)
+strata-graph install-hooks --agent codex    # adds hooks to .codex/hooks.json; also set codex_hooks = true in ~/.codex/config.toml
+```
+
+- Claude Code: facts follow `Read`, `Grep`, and `Bash` commands that read or search code.
+- Codex: hooks see shell commands only, which is how Codex reads code. `rg`, `grep`, `git grep`, `cat`, `nl`, `head`, `tail` and `sed -n` are understood, including pipelines (`nl -ba f.py | sed -n '1,80p'`) and `cd dir && ...`.
+- At session start the hook brings the index up to date and explains the tiers once. A tool call never builds a missing index; it adds nothing until one exists.
+- Each fact is sent once per session (again after `/clear` or compaction). An annotation is at most 2,000 characters (`--max-chars`); when facts don't fit, the ones with the most relations are kept.
+- The hook never edits files and never fails a tool call. If anything goes wrong it adds nothing and logs to stderr.
+
+On django an annotation takes about 0.2 s, on hono about 20 ms.
+
 ## Languages
 
 | Language | Files | Import resolution |
@@ -96,7 +119,7 @@ When strata-graph is upgraded, an existing index is re-resolved automatically; p
 
 ## Testing
 
-`cargo test --workspace --exclude strata-graph-py` runs unit tests, the golden-edge tests, the incremental-index test and the MCP tests (which start the server and talk JSON-RPC to it). Each fixture's `expected_edges.txt` was written by reading the fixture code, never by copying tool output. Lines starting with `!` guard false positives found on real repos.
+`cargo test --workspace --exclude strata-graph-py` runs unit tests, the golden-edge tests, the incremental-index tests (including concurrent writers) and the MCP and hook tests (which run the binary with real protocol messages and hook events). Each fixture's `expected_edges.txt` was written by reading the fixture code, never by copying tool output. Lines starting with `!` guard false positives found on real repos.
 
 The Python tests run against an installed wheel: `pytest crates/strata-graph-py/tests`.
 

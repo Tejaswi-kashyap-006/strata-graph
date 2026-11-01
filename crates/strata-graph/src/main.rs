@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod hook;
 mod mcp;
 
 use std::path::{Path, PathBuf};
@@ -18,9 +19,10 @@ use strata_graph_core::{
 #[derive(Parser)]
 #[command(name = "strata-graph", version, about = "Code graph for coding agents")]
 struct Cli {
-    /// Repository root.
-    #[arg(long, global = true, default_value = ".")]
-    root: PathBuf,
+    /// Repository root [default: the current directory; for `hook`, the
+    /// repository containing the agent's working directory].
+    #[arg(long, global = true)]
+    root: Option<PathBuf>,
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     json: bool,
@@ -59,6 +61,27 @@ enum Cmd {
     Watch,
     /// Serve the graph to coding agents over MCP (stdio).
     Mcp,
+    /// Agent hook: read one Claude Code or Codex hook event on stdin and
+    /// print graph facts about the code it touched.
+    Hook {
+        /// Largest annotation, in characters.
+        #[arg(long, default_value_t = hook::DEFAULT_MAX_CHARS)]
+        max_chars: usize,
+    },
+    /// Register `strata-graph hook` in an agent's project settings.
+    InstallHooks {
+        #[arg(long, value_enum)]
+        agent: hook::Agent,
+        /// Claude Code: write .claude/settings.local.json (not committed).
+        #[arg(long)]
+        local: bool,
+        /// Command the agent runs [default: strata-graph hook].
+        #[arg(long)]
+        command: Option<String>,
+        /// Print the resulting settings instead of writing them.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Source, class, callers and callees of SYMBOL in about --max-tokens tokens.
     Context {
         symbol: String,
@@ -195,6 +218,19 @@ fn print_nodes(g: &Graph, ids: &[u32], json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Whether a change to `path` can change the graph: a source file in any
+/// indexed language, or a file that sets import resolution.
+fn is_index_input(path: &Path) -> bool {
+    if path.components().any(|c| c.as_os_str() == ".strata") {
+        return false;
+    }
+    let config = path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+        n == "package.json"
+            || ((n.starts_with("tsconfig") || n.starts_with("jsconfig")) && n.ends_with(".json"))
+    });
+    config || strata_graph_core::lang::lang_for(path).is_some()
+}
+
 fn watch(root: &Path, json: bool) -> Result<()> {
     let (g, r) = update_index(root)?;
     println!("{}", report_line(&g, &r));
@@ -204,10 +240,7 @@ fn watch(root: &Path, json: bool) -> Result<()> {
     eprintln!("strata-graph: watching {} for changes", root.display());
     for events in rx {
         let Ok(events) = events else { continue };
-        let relevant = events.iter().any(|e| {
-            e.path.extension().is_some_and(|x| x == "py")
-                && !e.path.components().any(|c| c.as_os_str() == ".strata")
-        });
+        let relevant = events.iter().any(|e| is_index_input(&e.path));
         if !relevant {
             continue;
         }
@@ -222,7 +255,14 @@ fn watch(root: &Path, json: bool) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let root = cli.root.canonicalize()?;
+    if let Cmd::Hook { max_chars } = cli.cmd {
+        return hook::run(cli.root.as_deref(), max_chars);
+    }
+    let root = cli
+        .root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .canonicalize()?;
     let refresh = !cli.no_refresh;
 
     match cli.cmd {
@@ -242,6 +282,13 @@ fn main() -> Result<()> {
         }
         Cmd::Watch => watch(&root, cli.json)?,
         Cmd::Mcp => mcp::serve(&root)?,
+        Cmd::Hook { .. } => unreachable!("handled before the root is resolved"),
+        Cmd::InstallHooks {
+            agent,
+            local,
+            command,
+            dry_run,
+        } => hook::install(&root, agent, local, command.as_deref(), dry_run)?,
         Cmd::Context {
             symbol,
             max_tokens,
@@ -316,4 +363,32 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_index_input;
+    use std::path::Path;
+
+    #[test]
+    fn watch_reacts_to_every_indexed_language_and_config() {
+        for p in [
+            "a/b.py",
+            "src/x.ts",
+            "ui/App.tsx",
+            "lib/y.mjs",
+            "tsconfig.base.json",
+            "pkg/package.json",
+        ] {
+            assert!(is_index_input(Path::new(p)), "{p}");
+        }
+        for p in [
+            "README.md",
+            "dist/app.min.js",
+            ".strata/index.db",
+            "data.json",
+        ] {
+            assert!(!is_index_input(Path::new(p)), "{p}");
+        }
+    }
 }

@@ -7,10 +7,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ### Added
 - MCP server (`strata-graph mcp`, stdio) with seven read-only tools. Supports MCP 2024-11-05 to 2025-11-25 and the stateless 2026-07-28 revision. Answers refresh changed files first.
 - Context packs: one symbol's source, class, bases and subclasses, callers and callees in a token budget (`context` in the CLI, `Graph.context` in Python, `strata_context` over MCP).
+- Agent hooks (`strata-graph hook`, `strata-graph install-hooks --agent claude|codex`): graph facts appended to file reads and code searches in Claude Code (Read, Grep, Bash) and Codex (shell commands). Facts are sent once per session, trimmed to a budget, and never block a tool call.
+- `annotate` module in the core crate: per-line facts for a file range or a searched name, for any embedder.
 - Multi-hop results print as a tree: each hit sits under the hit that reached it (`Hit.from`, `tree_order`).
 - Standards enforced in CI: rustdoc with warnings as errors, `cargo audit`, ruff, `mypy --strict`.
 - `CONTRIBUTING.md` with the review rules for resolution changes.
 - Type stubs for the native Python module.
+
+### Fixed
+- `watch` ignored TypeScript/JavaScript files and tsconfig/package.json changes; it now reacts to every indexed language and to import settings.
+- A second process updating the index while a long update ran (over 5 s, as on large repos) failed with "database is locked". Writers now wait up to 30 s and take the write lock up front.
 
 ### Changed
 - Python 3.10 is now the minimum (3.9 reached end-of-life in October 2025).

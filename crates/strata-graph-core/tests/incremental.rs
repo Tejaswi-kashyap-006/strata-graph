@@ -147,3 +147,55 @@ fn engine_change_forces_reresolve() {
     );
     fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn concurrent_updates_all_succeed() {
+    // Agents run hooks for parallel tool calls while the MCP server may be
+    // updating too; every writer must wait its turn rather than fail.
+    let root = workspace("concurrent");
+    update_index(&root).unwrap();
+    let views = root.join("shop/views.py");
+    let text =
+        fs::read_to_string(&views).unwrap() + "\n\ndef racer():\n    return show_all(None)\n";
+    fs::write(&views, text).unwrap();
+
+    let results: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..6).map(|_| s.spawn(|| update_index(&root))).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    for r in &results {
+        assert!(r.is_ok(), "{:?}", r.as_ref().err());
+    }
+    let g = open_index(&root).unwrap();
+    assert_eq!(
+        has_call(&g, "shop.views.racer", "shop.views.show_all"),
+        Some(Tier::Scoped)
+    );
+    assert_eq!(stale_files(&root).unwrap(), 0);
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn an_update_waits_out_a_slow_writer() {
+    // A cold index of a large repo holds the write lock for several seconds
+    // (django: ~7 s). Another update must wait for it, not fail at 5 s.
+    let root = workspace("slow-writer");
+    update_index(&root).unwrap();
+    fs::write(root.join("shop/extra.py"), "def extra():\n    return 1\n").unwrap();
+
+    let db = strata_graph_core::index_path(&root);
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let conn = rusqlite::Connection::open(db).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(6500));
+        conn.execute_batch("COMMIT").unwrap();
+    });
+    locked_rx.recv().unwrap();
+    let (g, r) = update_index(&root).expect("update should wait for the lock");
+    holder.join().unwrap();
+    assert_eq!(r.parsed, 1);
+    assert!(g.nodes.iter().any(|n| n.qname == "shop.extra.extra"));
+    fs::remove_dir_all(&root).ok();
+}
