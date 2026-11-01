@@ -3,8 +3,43 @@
 //! graph edges is language-aware but lives in `resolve`.
 
 pub mod python;
+pub mod typescript;
+
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+/// Source language of a file. Resolution rules differ per language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lang {
+    #[default]
+    Python,
+    /// TypeScript and JavaScript (including TSX/JSX).
+    TypeScript,
+}
+
+/// File extensions strata-graph indexes, and the language of each.
+pub fn lang_for(path: &Path) -> Option<Lang> {
+    let name = path.file_name()?.to_str()?;
+    if name.ends_with(".min.js") {
+        return None;
+    }
+    match path.extension()?.to_str()? {
+        "py" => Some(Lang::Python),
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Some(Lang::TypeScript),
+        _ => None,
+    }
+}
+
+/// Parse a file with the front end for its extension.
+pub fn parse(rel_path: &str, source: &str) -> anyhow::Result<ParsedFile> {
+    match lang_for(Path::new(rel_path)) {
+        Some(Lang::Python) => python::parse(rel_path, source),
+        Some(Lang::TypeScript) => typescript::parse(rel_path, source),
+        None => anyhow::bail!("unsupported file type: {rel_path}"),
+    }
+}
 
 /// A definition as found in the syntax tree, before nesting is computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +72,10 @@ pub enum RawImport {
     /// `from m import *`
     Wildcard { from_module: String },
 }
+// TypeScript reuses these: `import {A as B} from "s"` and `export {A as B} from "s"`
+// are `From` (default imports use name "default"), `import * as ns from "s"` is
+// `Module` with an alias, and `export * from "s"` is `Wildcard`. Module strings are
+// raw import specifiers, resolved against the importing file.
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImportAt {
@@ -93,6 +132,8 @@ pub struct RawLocal {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedFile {
+    #[serde(default)]
+    pub lang: Lang,
     pub rel_path: String,
     pub hash: String,
     pub line_count: u32,
@@ -103,4 +144,7 @@ pub struct ParsedFile {
     pub types: Vec<RawType>,
     pub locals: Vec<RawLocal>,
     pub return_values: Vec<RawReturn>,
+    /// Local name exported as `default` (TypeScript).
+    #[serde(default)]
+    pub default_export: Option<String>,
 }

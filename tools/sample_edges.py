@@ -9,9 +9,22 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 per_tier = {"T1": int(sys.argv[2]), "T0": int(sys.argv[3]), "T0-ambiguous": int(sys.argv[4])}
-g = json.loads((root / ".strata" / "graph.json").read_text())
+def load_graph(db_path):
+    """Nodes (indexed by id) and edges from a strata-graph index.db."""
+    import sqlite3
+
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    cols = ["id", "kind", "qname", "name", "file", "start_line", "end_line", "parent"]
+    nodes = [dict(zip(cols, r)) for r in con.execute(f"SELECT {', '.join(cols)} FROM nodes ORDER BY id")]
+    ecols = ["src", "dst", "kind", "tier", "file", "line"]
+    edges = [dict(zip(ecols, r)) for r in con.execute(f"SELECT {', '.join(ecols)} FROM edges")]
+    con.close()
+    return {"nodes": nodes, "edges": edges}
+
+
+g = load_graph(root / ".strata" / "index.db")
 nodes = g["nodes"]
-rng = random.Random(7)
+rng = random.Random(int(__import__("os").environ.get("SEED", "7")))
 
 
 def line(file, n):

@@ -65,6 +65,11 @@ fn py_shop_edges() {
 }
 
 #[test]
+fn ts_shop_edges() {
+    check_fixture("ts_shop");
+}
+
+#[test]
 fn py_shop_queries() {
     let g = index_repo(&fixture("py_shop")).unwrap();
     let compute = g.resolve_one("TaxCalculator.compute").unwrap();

@@ -70,3 +70,6 @@ CALLS T1 shop.billing.factory.use_plain -> shop.billing.factory.Builder.reset
 # a method inherited from a library base class is external, not a name match
 CALLS T1 shop.views.cache_use -> shop.views.Cache.touch
 !CALLS T0 shop.views.cache_use -> shop.views.Fake.move_to_end
+
+# a chain rooted at a third-party module is external, never a repo name match
+!CALLS T0-ambiguous shop.views.ext_chain -> shop.views.HtmlView.render

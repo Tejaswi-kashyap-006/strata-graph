@@ -121,3 +121,29 @@ fn incremental_updates_stay_correct() {
 
     fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn engine_change_forces_reresolve() {
+    let root = workspace("engine");
+    let (g1, _) = update_index(&root).unwrap();
+    let path = strata_graph_core::index_path(&root);
+
+    // Simulate an index written by an older engine.
+    Store::open(&path)
+        .unwrap()
+        .set_meta_for_tests("config", "0.0.0+r0:{}")
+        .unwrap();
+
+    let (g2, r2) = update_index(&root).unwrap();
+    assert_eq!(
+        r2.parsed, 0,
+        "cached facts are reused; only resolution reruns"
+    );
+    assert_eq!(g2.edges.len(), g1.edges.len());
+    let stamp = Store::open(&path).unwrap().meta("config").unwrap().unwrap();
+    assert!(
+        stamp.starts_with(&format!("{}+r", env!("CARGO_PKG_VERSION"))),
+        "index was not re-resolved: {stamp}"
+    );
+    fs::remove_dir_all(&root).ok();
+}

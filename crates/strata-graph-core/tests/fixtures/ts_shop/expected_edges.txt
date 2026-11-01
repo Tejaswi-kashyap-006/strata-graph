@@ -1,0 +1,58 @@
+# Hand-checked edges for ts_shop (TypeScript, TSX, JavaScript).
+# Format: [!]KIND TIER SRC -> DST. Module names are file paths without extension.
+
+# inheritance, this, super, class-field initialisers
+INHERITS T1 src/billing/invoice.Invoice -> src/core/base.Model
+CALLS T1 src/billing/invoice.Invoice.total -> src/billing/invoice.Invoice.subtotal
+CALLS T1 src/billing/invoice.Invoice.total -> src/billing/tax.TaxCalculator.compute
+CALLS T1 src/billing/invoice.Invoice.save -> src/core/base.Model.save
+CALLS T1 src/billing/invoice.Invoice.save -> src/core/base.Model.validate
+CALLS T1 src/core/base.Model.save -> src/core/base.Model.write
+CALLS T1 src/billing/tax.TaxCalculator.compute -> src/billing/tax.roundMoney
+
+# tsconfig path alias -> index.ts -> `export { default as Invoice }`; new; typed locals
+CALLS T1 src/api.checkout -> src/billing/invoice.Invoice
+CALLS T1 src/api.checkout -> src/billing/invoice.Invoice.save
+CALLS T1 src/api.checkout -> src/billing/invoice.Invoice.total
+!CALLS T1 src/api.checkout -> src/core/base.Model.save
+
+# `./tax.js` specifier pointing at tax.ts; typed parameter on an arrow function
+CALLS T1 src/api.quote -> src/billing/tax.TaxCalculator.compute
+
+# declared return type; interface method through a generic parameter type;
+# a function reached through `export *` in an index file
+CALLS T1 src/api.fresh -> src/billing/invoice.Invoice.total
+CALLS T1 src/api.load -> src/core/base.Repo.find
+CALLS T1 src/api.load -> src/billing/tax.roundMoney
+
+IMPORTS T1 src/api -> src/billing/index
+IMPORTS T1 src/billing/invoice -> src/core/base
+
+# JSX components (intrinsic tags like <div> are not calls), call inside a callback
+CALLS T1 src/ui/App.App -> src/ui/App.Layout
+CALLS T1 src/ui/App.App -> src/ui/Button.Button
+CALLS T1 src/ui/App.App -> src/api.checkout
+
+# plain JavaScript
+CALLS T1 scripts/report.main -> scripts/report.helperOnly
+
+# untyped receiver with two candidates; guards against the Python-era false positives
+CALLS T0-ambiguous src/views.show -> src/views.HtmlView.render
+CALLS T0-ambiguous src/views.show -> src/views.JsonView.render
+!CALLS T0 src/views.touch -> src/views.Registry.set
+!CALLS T0 src/views.shadow -> src/billing/tax.roundMoney
+
+# workspace package imported by name: exports "." (source condition) and "./button"
+CALLS T1 src/ui/App.App -> packages/ui-kit/src/card.Card
+CALLS T1 src/ui/App.App -> packages/ui-kit/src/button.bigButton
+
+# a chain rooted at an npm package is external, never a repo name match
+!CALLS T0-ambiguous src/api.load -> src/views.HtmlView.render
+
+# `export { _void as void }` inside a module; a known module lacking the member
+CALLS T1 src/api.aliasUse -> src/billing/tax._void
+!CALLS T0 src/api.aliasUse -> src/views.Mocker.void
+!CALLS T0-ambiguous src/api.missingMember -> src/views.HtmlView.render
+
+# TypeScript: a unique method name on an untyped receiver is labelled ambiguous
+CALLS T0-ambiguous src/views.scanUntyped -> src/views.Scanner.scanOnce

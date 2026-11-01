@@ -1,0 +1,9 @@
+{
+  // JSONC: comments and trailing commas are allowed in tsconfig files.
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@/*": ["./src/*"], /* path alias used by src/api.ts and src/ui/App.tsx */
+    },
+  },
+}

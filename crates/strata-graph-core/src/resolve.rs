@@ -12,8 +12,9 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::graph::{FileInfo, Graph};
-use crate::lang::python::{BUILTINS, BUILTIN_METHODS};
-use crate::lang::{ParsedFile, RawImport, TypeTarget};
+use serde::{Deserialize, Serialize};
+
+use crate::lang::{python, typescript, Lang, ParsedFile, RawImport, TypeTarget};
 use crate::model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 
 /// Most candidates a name-only match may have before it is left unresolved.
@@ -35,6 +36,7 @@ type TypeHint = (usize, NodeId, String);
 
 struct FileCtx {
     module: NodeId,
+    lang: Lang,
     /// (start_byte, end_byte, node) for every definition, sorted by start.
     spans: Vec<(usize, usize, NodeId)>,
 }
@@ -66,8 +68,8 @@ struct Resolver {
     /// (class, field) → type hints for self.x and class-body fields.
     field_types: HashMap<(NodeId, String), Vec<TypeHint>>,
     /// Simple name → top-level-ish functions and classes, for T0 fallback.
-    callables_by_name: HashMap<String, Vec<NodeId>>,
-    methods_by_name: HashMap<String, Vec<NodeId>>,
+    callables_by_name: HashMap<(Lang, String), Vec<NodeId>>,
+    methods_by_name: HashMap<(Lang, String), Vec<NodeId>>,
     /// Scope (function, class or module) → names bound locally in it.
     locals: HashMap<NodeId, HashSet<String>>,
     /// Function or method → its return annotation, resolved in the enclosing scope.
@@ -187,6 +189,141 @@ fn single_call_callee(s: &str) -> Option<&str> {
     None
 }
 
+/// Project-level settings that change how imports resolve.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// TypeScript `baseUrl`, relative to the repo root ("" is the root).
+    pub base_url: Option<String>,
+    /// TypeScript `paths`: pattern -> targets, targets relative to the repo root.
+    pub paths: Vec<(String, Vec<String>)>,
+    /// JS/TS packages defined inside the repo (monorepo workspaces), so that
+    /// `import "pkg/sub"` resolves to the package's own source files.
+    pub packages: Vec<WorkspacePackage>,
+}
+
+/// A package.json found in the repo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspacePackage {
+    pub name: String,
+    /// Package directory, relative to the repo root.
+    pub dir: String,
+    /// `exports` subpath (".", "./sub", "./*") -> every target path it lists,
+    /// relative to the repo root, in file order.
+    pub exports: Vec<(String, Vec<String>)>,
+    /// `source`, `module`, `main` and `types` fields, relative to the repo root.
+    pub entries: Vec<String>,
+}
+
+/// Module name for a TypeScript/JavaScript file: its path without extension.
+fn ts_module_name(rel: &str) -> String {
+    for ext in [".d.ts", ".d.mts", ".d.cts"] {
+        if let Some(stem) = rel.strip_suffix(ext) {
+            return stem.to_string();
+        }
+    }
+    match rel.rsplit_once('.') {
+        Some((stem, _)) if !stem.ends_with('/') => stem.to_string(),
+        _ => rel.to_string(),
+    }
+}
+
+/// Collapse `.` and `..` segments; None if the path climbs above the root.
+fn normalize_rel(path: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                out.pop()?;
+            }
+            s => out.push(s),
+        }
+    }
+    Some(out.join("/"))
+}
+
+fn join_rel(dir: &str, rest: &str) -> String {
+    if dir.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{dir}/{rest}")
+    }
+}
+
+/// Resolve an import specifier in `from_rel` to a repo module name: relative
+/// paths, `index` files, `.js` specifiers that point at `.ts` sources, and
+/// tsconfig `paths` / `baseUrl`. None means a package outside the repo.
+fn ts_resolve(
+    modules: &HashMap<String, NodeId>,
+    config: &ProjectConfig,
+    from_rel: &str,
+    spec: &str,
+) -> Option<String> {
+    let dir = from_rel.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+    let mut bases = Vec::new();
+    if spec.starts_with('.') {
+        bases.push(join_rel(dir, spec));
+    } else {
+        for (pattern, targets) in &config.paths {
+            if let Some(prefix) = pattern.strip_suffix('*') {
+                if let Some(rest) = spec.strip_prefix(prefix) {
+                    bases.extend(targets.iter().map(|t| t.replacen('*', rest, 1)));
+                }
+            } else if pattern == spec {
+                bases.extend(targets.iter().cloned());
+            }
+        }
+        for pkg in &config.packages {
+            let sub = if spec == pkg.name {
+                ".".to_string()
+            } else if let Some(rest) = spec.strip_prefix(&format!("{}/", pkg.name)) {
+                format!("./{rest}")
+            } else {
+                continue;
+            };
+            for (key, targets) in &pkg.exports {
+                if *key == sub {
+                    bases.extend(targets.iter().cloned());
+                } else if let Some((pre, post)) = key.split_once('*') {
+                    if let Some(mid) = sub.strip_prefix(pre).and_then(|r| r.strip_suffix(post)) {
+                        bases.extend(targets.iter().map(|t| t.replacen('*', mid, 1)));
+                    }
+                }
+            }
+            if sub == "." {
+                bases.extend(pkg.entries.iter().cloned());
+                bases.push(join_rel(&pkg.dir, "src/index"));
+                bases.push(join_rel(&pkg.dir, "index"));
+            } else {
+                let rest = &sub[2..];
+                bases.push(join_rel(&pkg.dir, &format!("src/{rest}")));
+                bases.push(join_rel(&pkg.dir, rest));
+            }
+        }
+        if let Some(b) = &config.base_url {
+            bases.push(join_rel(b, spec));
+        }
+    }
+    for b in bases {
+        let Some(norm) = normalize_rel(&b) else {
+            continue;
+        };
+        let mut stem = norm.as_str();
+        for ext in [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"] {
+            if let Some(s) = stem.strip_suffix(ext) {
+                stem = s;
+                break;
+            }
+        }
+        for cand in [stem.to_string(), join_rel(stem, "index")] {
+            if modules.contains_key(&cand) {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
 impl Resolver {
     fn kind(&self, id: NodeId) -> NodeKind {
         self.nodes[id as usize].kind
@@ -195,6 +332,16 @@ impl Resolver {
     fn resolve_path(&self, path: &str, depth: u32) -> Option<NodeId> {
         if depth > MAX_DEPTH {
             return None;
+        }
+        // TypeScript bindings: "<module path>::<member>.<member>"
+        if let Some((m, rest)) = path.split_once("::") {
+            let mut cur = *self.module_by_name.get(m)?;
+            if !rest.is_empty() {
+                for part in rest.split('.') {
+                    cur = self.member(cur, part, depth + 1)?;
+                }
+            }
+            return Some(cur);
         }
         let parts: Vec<&str> = path.split('.').collect();
         for i in (1..=parts.len()).rev() {
@@ -294,7 +441,11 @@ impl Resolver {
         {
             return Res::External;
         }
-        if BUILTINS.contains(&name) {
+        let builtins = match self.files[file].lang {
+            Lang::Python => python::BUILTINS,
+            Lang::TypeScript => typescript::BUILTINS,
+        };
+        if builtins.contains(&name) {
             return Res::External;
         }
         Res::NotFound
@@ -411,8 +562,18 @@ impl Resolver {
     }
 
     fn expr_class_inner(&self, file: usize, scope: Option<NodeId>, expr: &str) -> Option<NodeId> {
-        if expr == "self" || expr == "cls" {
+        if expr == "self" || expr == "cls" || expr == "this" {
             return self.enclosing_class(scope);
+        }
+        if let Some(rest) = expr.strip_prefix("new ") {
+            let rest = rest.trim();
+            if let Some(head) = single_call_callee(rest) {
+                return self.call_value_class(file, scope, head);
+            }
+            if is_dotted_ident(rest) {
+                return self.call_value_class(file, scope, rest);
+            }
+            return None;
         }
         if let Some(head) = single_call_callee(expr) {
             return self.call_value_class(file, scope, head);
@@ -423,7 +584,11 @@ impl Resolver {
         if !expr.contains('.') {
             return self.var_class(file, scope, expr);
         }
-        if let Some(field) = expr.strip_prefix("self.").filter(|f| !f.contains('.')) {
+        if let Some(field) = expr
+            .strip_prefix("self.")
+            .or_else(|| expr.strip_prefix("this."))
+            .filter(|f| !f.contains('.'))
+        {
             return self
                 .enclosing_class(scope)
                 .and_then(|c| self.field_class(c, field));
@@ -495,7 +660,7 @@ impl Resolver {
     /// Resolve the callee of a call expression: `self.m` / `cls.m` through the
     /// enclosing class, anything else as a dotted name.
     fn resolve_head(&self, file: usize, scope: Option<NodeId>, head: &str) -> Res {
-        for prefix in ["self.", "cls."] {
+        for prefix in ["self.", "cls.", "this."] {
             if let Some(m) = head.strip_prefix(prefix).filter(|m| !m.contains('.')) {
                 return match self
                     .enclosing_class(scope)
@@ -530,7 +695,8 @@ impl Resolver {
                 }
                 if self.locals.get(&id).is_some_and(|l| l.contains(var)) {
                     // An untyped parameter of a test or fixture is a pytest fixture.
-                    let is_test = self.nodes[id as usize].name.starts_with("test");
+                    let is_test = self.files[file].lang == Lang::Python
+                        && self.nodes[id as usize].name.starts_with("test");
                     if is_test || self.is_fixture.contains(&id) {
                         if let Some(f) = self.pick_fixture(file, var) {
                             if f != id {
@@ -575,8 +741,13 @@ impl Resolver {
         None
     }
 
-    fn fallback(&self, table: &HashMap<String, Vec<NodeId>>, name: &str) -> Vec<(NodeId, Tier)> {
-        match table.get(name).map(Vec::as_slice) {
+    fn fallback(
+        &self,
+        table: &HashMap<(Lang, String), Vec<NodeId>>,
+        lang: Lang,
+        name: &str,
+    ) -> Vec<(NodeId, Tier)> {
+        match table.get(&(lang, name.to_string())).map(Vec::as_slice) {
             Some([one]) => vec![(*one, Tier::NameOnly)],
             Some(many) if many.len() <= MAX_AMBIGUOUS => {
                 many.iter().map(|n| (*n, Tier::Ambiguous)).collect()
@@ -598,7 +769,9 @@ impl Resolver {
                 Res::Found(n, t) => Ok(vec![(n, t)]),
                 Res::External => Err(()),
                 Res::Local => Ok(Vec::new()),
-                Res::NotFound => Ok(self.fallback(&self.callables_by_name, callee)),
+                Res::NotFound => {
+                    Ok(self.fallback(&self.callables_by_name, self.files[file].lang, callee))
+                }
             };
         };
 
@@ -613,7 +786,7 @@ impl Resolver {
             return Err(());
         }
 
-        if recv.starts_with("super(") {
+        if recv.starts_with("super(") || recv == "super" {
             if let Some(class) = self.enclosing_class(scope) {
                 for b in self.bases.get(&class).into_iter().flatten() {
                     if let Some(m) = self.mro_lookup(*b, callee) {
@@ -627,9 +800,9 @@ impl Resolver {
         } else {
             // A module or class object: `pkg.mod.f()`, `Model.create()`.
             if is_dotted_ident(recv)
-                && recv != "self"
-                && recv != "cls"
+                && !matches!(recv, "self" | "cls" | "this")
                 && !recv.starts_with("self.")
+                && !recv.starts_with("this.")
             {
                 match self.resolve_dotted(file, scope, recv) {
                     Res::Found(n, t)
@@ -641,6 +814,9 @@ impl Resolver {
                         if self.kind(n) == NodeKind::Class && self.has_external_ancestor(n) {
                             return Err(());
                         }
+                        // A repo module or class without that member: leave it
+                        // unresolved. It is never some other class's method.
+                        return Ok(Vec::new());
                     }
                     Res::External => return Err(()),
                     _ => {}
@@ -658,16 +834,45 @@ impl Resolver {
             }
         }
 
-        if (callee.starts_with("__") && callee.ends_with("__")) || BUILTIN_METHODS.contains(&callee)
+        // A chain rooted at something outside the repo (`np.array(x).reshape()`,
+        // `z.string().optional()` with z from a package) is external, not a guess.
+        let root_expr = recv.strip_prefix("new ").unwrap_or(recv);
+        let root_len = root_expr
+            .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$'))
+            .unwrap_or(root_expr.len());
+        let root = &root_expr[..root_len];
+        if !root.is_empty()
+            && !matches!(root, "self" | "cls" | "this" | "super")
+            && self.resolve_name(file, scope, root) == Res::External
+        {
+            return Err(());
+        }
+
+        let lang = self.files[file].lang;
+        let builtin_methods = match lang {
+            Lang::Python => python::BUILTIN_METHODS,
+            Lang::TypeScript => typescript::BUILTIN_METHODS,
+        };
+        if (callee.starts_with("__") && callee.ends_with("__")) || builtin_methods.contains(&callee)
         {
             return Ok(Vec::new());
         }
-        Ok(self.fallback(&self.methods_by_name, callee))
+        let mut targets = self.fallback(&self.methods_by_name, lang, callee);
+        if lang == Lang::TypeScript {
+            // Hand checks showed unique-name method matches on untyped receivers
+            // are reliable in Python (26/26) but not in TypeScript (about half
+            // right on zod), where callback parameters and object-literal
+            // namespaces are common. Label them ambiguous there.
+            for t in &mut targets {
+                t.1 = Tier::Ambiguous;
+            }
+        }
+        Ok(targets)
     }
 }
 
 /// Build the graph for a set of parsed files.
-pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
+pub fn build(mut parsed: Vec<ParsedFile>, config: &ProjectConfig) -> Graph {
     parsed.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
 
     let package_dirs: HashSet<String> = parsed
@@ -700,13 +905,21 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
 
     // 1. Nodes and containment.
     for (fi, pf) in parsed.iter().enumerate() {
-        let (mname, is_init) = module_name(&pf.rel_path, &package_dirs);
+        let (mname, is_init) = match pf.lang {
+            Lang::Python => module_name(&pf.rel_path, &package_dirs),
+            Lang::TypeScript => (ts_module_name(&pf.rel_path), false),
+        };
         let module_id = nodes.len() as NodeId;
         nodes.push(Node {
             id: module_id,
             kind: NodeKind::Module,
             qname: mname.clone(),
-            name: mname.rsplit('.').next().unwrap_or(&mname).to_string(),
+            name: match pf.lang {
+                Lang::Python => mname.rsplit('.').next(),
+                Lang::TypeScript => mname.rsplit('/').next(),
+            }
+            .unwrap_or(&mname)
+            .to_string(),
             file: pf.rel_path.clone(),
             start_line: 1,
             end_line: pf.line_count.max(1),
@@ -777,6 +990,7 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
         }
         files.push(FileCtx {
             module: module_id,
+            lang: pf.lang,
             spans,
         });
     }
@@ -788,6 +1002,62 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
     for (fi, pf) in parsed.iter().enumerate() {
         let module = files[fi].module;
         let (mname, is_init) = &module_meta[fi];
+        if pf.lang == Lang::TypeScript {
+            for imp in &pf.imports {
+                let resolve = |spec: &str| ts_resolve(&module_by_name, config, &pf.rel_path, spec);
+                match &imp.import {
+                    RawImport::From {
+                        from_module,
+                        name,
+                        alias,
+                    } if from_module.is_empty() => {
+                        // `export { a as b }` inside this module.
+                        if let Some(alias) = alias {
+                            bindings
+                                .entry(module)
+                                .or_default()
+                                .insert(alias.clone(), format!("{mname}::{name}"));
+                        }
+                    }
+                    RawImport::From {
+                        from_module,
+                        name,
+                        alias,
+                    } => {
+                        let local = alias.clone().unwrap_or_else(|| name.clone());
+                        let path = match resolve(from_module) {
+                            Some(m) => {
+                                import_targets.push((fi, format!("{m}::"), imp.line));
+                                format!("{m}::{name}")
+                            }
+                            None => format!("@external::{from_module}"),
+                        };
+                        bindings.entry(module).or_default().insert(local, path);
+                    }
+                    RawImport::Module {
+                        module: spec,
+                        alias: Some(ns),
+                    } => {
+                        let path = match resolve(spec) {
+                            Some(m) => {
+                                import_targets.push((fi, format!("{m}::"), imp.line));
+                                format!("{m}::")
+                            }
+                            None => format!("@external::{spec}"),
+                        };
+                        bindings.entry(module).or_default().insert(ns.clone(), path);
+                    }
+                    RawImport::Wildcard { from_module } => {
+                        if let Some(m) = resolve(from_module) {
+                            import_targets.push((fi, format!("{m}::"), imp.line));
+                            stars.entry(module).or_default().push(m);
+                        }
+                    }
+                    RawImport::Module { alias: None, .. } => {}
+                }
+            }
+            continue;
+        }
         for imp in &pf.imports {
             match &imp.import {
                 RawImport::Module { module: m, alias } => {
@@ -831,18 +1101,35 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
         }
     }
 
-    let mut callables_by_name: HashMap<String, Vec<NodeId>> = HashMap::new();
-    let mut methods_by_name: HashMap<String, Vec<NodeId>> = HashMap::new();
+    // `export default X` makes X reachable as the module member "default".
+    for (fi, pf) in parsed.iter().enumerate() {
+        let Some(name) = &pf.default_export else {
+            continue;
+        };
+        let m = files[fi].module;
+        if let Some(&id) = children.get(&m).and_then(|c| c.get(name)) {
+            children.entry(m).or_default().insert("default".into(), id);
+        } else if let Some(path) = bindings.get(&m).and_then(|b| b.get(name)).cloned() {
+            bindings
+                .entry(m)
+                .or_default()
+                .insert("default".into(), path);
+        }
+    }
+
+    let file_lang: HashMap<&str, Lang> = parsed
+        .iter()
+        .map(|p| (p.rel_path.as_str(), p.lang))
+        .collect();
+    let mut callables_by_name: HashMap<(Lang, String), Vec<NodeId>> = HashMap::new();
+    let mut methods_by_name: HashMap<(Lang, String), Vec<NodeId>> = HashMap::new();
     for n in &nodes {
+        let key = (file_lang[n.file.as_str()], n.name.clone());
         match n.kind {
-            NodeKind::Function | NodeKind::Class => callables_by_name
-                .entry(n.name.clone())
-                .or_default()
-                .push(n.id),
-            NodeKind::Method => methods_by_name
-                .entry(n.name.clone())
-                .or_default()
-                .push(n.id),
+            NodeKind::Function | NodeKind::Class => {
+                callables_by_name.entry(key).or_default().push(n.id)
+            }
+            NodeKind::Method => methods_by_name.entry(key).or_default().push(n.id),
             NodeKind::Module => {}
         }
     }
@@ -933,7 +1220,10 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
             let res = r.resolve_dotted(fi, outer, &b.base);
             let res = match res {
                 Res::NotFound if !b.base.contains('.') => {
-                    match r.fallback(&r.callables_by_name, &b.base).as_slice() {
+                    match r
+                        .fallback(&r.callables_by_name, r.files[fi].lang, &b.base)
+                        .as_slice()
+                    {
                         [(n, Tier::NameOnly)] => Res::Found(*n, Tier::NameOnly),
                         _ => Res::NotFound,
                     }

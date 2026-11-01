@@ -1,0 +1,7 @@
+{
+  "name": "@shop/ui-kit",
+  "exports": {
+    ".": { "source": "./src/index.ts", "import": "./dist/index.js" },
+    "./button": "./src/button.ts"
+  }
+}

@@ -16,7 +16,7 @@ use crate::lang::ParsedFile;
 use crate::model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 
 /// Bump when the schema or the parsed-facts format changes; old stores are rebuilt.
-pub const STORE_VERSION: i64 = 2;
+pub const STORE_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -153,6 +153,26 @@ impl Store {
         Ok(())
     }
 
+    /// A value from the meta table.
+    pub fn meta(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Overwrite a meta value. Exposed for tests that simulate old indexes.
+    #[doc(hidden)]
+    pub fn set_meta_for_tests(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// True once at least one update has been written.
     pub fn has_graph(&self) -> Result<bool> {
         Ok(self
@@ -206,6 +226,7 @@ impl Store {
         touched: &[(String, i64, i64)],
         removed: &[String],
         graph: &Graph,
+        config_key: &str,
     ) -> Result<()> {
         let tx = self.conn.transaction()?;
         {
@@ -270,6 +291,10 @@ impl Store {
             tx.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES ('stats', ?1)",
                 params![serde_json::to_string(&graph.stats)?],
+            )?;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('config', ?1)",
+                params![config_key],
             )?;
         }
         tx.commit()?;

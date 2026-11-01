@@ -230,6 +230,7 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
     });
 
     Ok(ParsedFile {
+        lang: super::Lang::Python,
         rel_path: rel_path.to_string(),
         hash: blake3::hash(bytes).to_hex().to_string(),
         line_count: source.lines().count() as u32,
@@ -240,6 +241,7 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
         types,
         locals,
         return_values,
+        default_export: None,
     })
 }
 
@@ -285,7 +287,7 @@ fn single_non_none<'a>(parts: impl Iterator<Item = &'a str>) -> Option<String> {
 }
 
 /// Run a query and hand each match's captures, as (capture name, node), to `f`.
-fn for_each_match<'t>(
+pub(crate) fn for_each_match<'t>(
     query: &Query,
     root: Node<'t>,
     bytes: &[u8],

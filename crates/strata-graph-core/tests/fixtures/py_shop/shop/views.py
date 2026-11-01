@@ -48,3 +48,11 @@ def cache_use(c: Cache):
     # move_to_end is inherited from OrderedDict, outside the repo.
     c.move_to_end("x")
     c.touch()
+
+
+import numpy as np
+
+
+def ext_chain():
+    # Rooted at a third-party module: external, not one of the repo's render() methods.
+    return np.zeros(3).render()

@@ -1,8 +1,8 @@
 # strata-graph
 
-A code graph for coding agents. strata-graph parses a repository into a graph of modules, classes, functions and the calls, imports and inheritance between them. Every edge carries a confidence tier, so an agent can see who calls what, and how sure that answer is, without reading files to find out.
+A code graph for coding agents. strata-graph parses a Python, TypeScript or JavaScript repository into a graph of modules, classes, functions and the calls, imports and inheritance between them. Every edge carries a confidence tier, so an agent can see who calls what, and how sure that answer is, without reading files to find out.
 
-> **Status: week 2 of a 6-week MVP.** Python indexing, tiered call resolution, an incremental SQLite index, a CLI and a Python SDK work today. Next: TypeScript, an MCP server, and Claude Code / Codex hooks. Gate reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md).
+> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI and a Python SDK work today. Next: an MCP server and Claude Code / Codex hooks. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md).
 
 ## Why
 
@@ -45,23 +45,34 @@ Add `--json` for machine-readable output. Queries pick up file changes before an
 
 On django (531k lines, 2 cores) a cold index takes 6.7 s, an update after editing one file 1.2 s, and an update with no changes 0.18 s.
 
+## Languages
+
+| Language | Files | Import resolution |
+| --- | --- | --- |
+| Python | `.py` | Packages and `__init__.py`, namespace subpackages, relative imports, re-exports, `import *` |
+| TypeScript / JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | Relative paths, `index` files, tsconfig/jsconfig `paths` and `baseUrl`, the repo's own packages via package.json `exports`, default and namespace imports, re-exports |
+
+`node_modules/` is always skipped; everything else follows `.gitignore`.
+
 ## Confidence tiers
 
 | Tier | Meaning |
 | --- | --- |
 | `T2` | Structural fact (containment) or, later, confirmed by a compiler index (SCIP) |
-| `T1` | Resolved by Python's lookup rules: scopes, imports and re-exports, `self` / `cls` / `super()` through resolved bases, type hints (annotations, typed parameters, return types, constructor and factory calls, inferred returns) and pytest fixtures |
-| `T0` | The only definition with that name in the repo |
+| `T1` | Resolved by the language's lookup rules: scopes, imports and re-exports, `self` / `this` / `super` through resolved bases, type hints (annotations, typed parameters, return types, constructor and factory calls, inferred returns), pytest fixtures, JSX components |
+| `T0` | The only definition with that name in the repo (Python only; in TypeScript these are labelled ambiguous because hand checks found them unreliable) |
 | `T0-ambiguous` | One of 2–3 definitions with that name; right about half the time |
 
-Calls that match more than three definitions, hit an untyped local, use a builtin method name on an untyped value (`d.items()`, `f.read()`), or reach a method inherited from a library base class are left unresolved or marked external rather than guessed.
+Calls that match more than three definitions, hit an untyped local, use a builtin method name on an untyped value (`d.items()`, `f.read()`), start from a third-party import (`np.zeros(3).render()`), or reach a method inherited from a library base class are left unresolved or marked external rather than guessed.
+
+When strata-graph is upgraded, an existing index is re-resolved automatically; parsed files are reused.
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `crates/strata-graph-core` | Parsing, resolution, storage and queries (the library) |
-| `crates/strata-graph-core/queries/python` | tree-sitter query files; adding a language is mostly new query files |
+| `crates/strata-graph-core/queries/{python,typescript}` | tree-sitter query files; adding a language is mostly new query files |
 | `crates/strata-graph-core/tests/fixtures` | Fixture repos with hand-checked `expected_edges.txt` |
 | `crates/strata-graph` | The `strata-graph` CLI |
 | `crates/strata-graph-py` | The `strata_graph` Python package (PyO3 + maturin) |
