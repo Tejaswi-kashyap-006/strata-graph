@@ -15,13 +15,22 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use strata_graph_core::annotate::{name_facts, pattern_names, range_facts, render, Fact};
-use strata_graph_core::{index_path, open_index, stale_files, update_index, Graph, Tier};
+use strata_graph_core::annotate::{pattern_names, render, Annotator, Density, Fact};
+use strata_graph_core::{index_path, needs_update, open_index, update_index, Graph, Tier};
 
 /// Largest hook input read from stdin.
 const MAX_INPUT: u64 = 8 * 1024 * 1024;
 /// Default size of one annotation, in characters (about 500 tokens).
 pub const DEFAULT_MAX_CHARS: usize = 2000;
+
+/// How much a hook says.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    /// Largest annotation, in characters.
+    pub max_chars: usize,
+    /// Which relations to include; `Auto` follows the repo's shape.
+    pub density: Density,
+}
 /// Most files and names annotated for one tool call.
 const MAX_TARGETS: usize = 3;
 /// Session dedup files older than this are removed at session start.
@@ -557,9 +566,9 @@ fn prune_sessions(root: &Path) {
     }
 }
 
-/// The graph, updated first if files changed since the last index.
+/// The graph, updated first if files or the engine changed since the last index.
 fn fresh_graph(root: &Path) -> Result<Graph> {
-    if stale_files(root)? > 0 {
+    if needs_update(root)? {
         Ok(update_index(root)?.0)
     } else {
         open_index(root)
@@ -568,7 +577,12 @@ fn fresh_graph(root: &Path) -> Result<Graph> {
 
 // ----------------------------------------------------------------- events ---
 
-fn session_start(root: &Path, input: &Value, seen: &Seen) -> Result<Option<String>> {
+fn session_start(
+    root: &Path,
+    input: &Value,
+    seen: &Seen,
+    opts: &Options,
+) -> Result<Option<String>> {
     prune_sessions(root);
     // After /clear or compaction the model no longer has earlier facts.
     if matches!(input["source"].as_str(), Some("clear" | "compact")) {
@@ -590,10 +604,14 @@ fn session_start(root: &Path, input: &Value, seen: &Seen) -> Result<Option<Strin
         return Ok(None);
     }
     let s = &g.stats;
+    let what = match Annotator::new(&g, Tier::NameOnly, opts.density).density() {
+        Density::Inverse => "who calls a definition and what extends or implements it",
+        _ => "who calls a definition, what it calls, base classes and subtypes",
+    };
     Ok(Some(format!(
         "[strata-graph] This repo has a code graph: {} files ({}), {} symbols, {} resolved calls. \
-         File reads and code searches are followed by graph facts tagged [strata-graph]: who calls \
-         a definition, what it calls, base classes and subclasses.\n\
+         File reads and code searches are followed by graph facts tagged [strata-graph]: {what}. \
+         Calls to widely used helpers are counted rather than named.\n\
          Tiers: T2 structural; T1 resolved through scopes, imports or types; T0 the only definition \
          with that name. Ambiguous matches and calls into libraries are left out, and \"no resolved \
          callers\" does not prove code is unused (dynamic calls are not tracked).\n\
@@ -610,7 +628,7 @@ fn post_tool_use(
     cwd: &Path,
     input: &Value,
     seen: &Seen,
-    max_chars: usize,
+    opts: &Options,
 ) -> Result<Option<String>> {
     let targets = tool_targets(input, cwd);
     if targets.files.is_empty() && targets.names.is_empty() {
@@ -622,7 +640,7 @@ fn post_tool_use(
         return Ok(None);
     }
     let g = fresh_graph(root)?;
-    let tier = Tier::NameOnly;
+    let annotator = Annotator::new(&g, Tier::NameOnly, opts.density);
     let mut sections: Vec<(String, Vec<Fact>)> = Vec::new();
     let mut files_done = 0;
     for (path, start, end) in &targets.files {
@@ -636,7 +654,8 @@ fn post_tool_use(
             continue;
         }
         files_done += 1;
-        let facts: Vec<Fact> = range_facts(&g, &rel, *start, *end, tier)
+        let facts: Vec<Fact> = annotator
+            .range_facts(&rel, *start, *end)
             .into_iter()
             .filter(|f| seen.fresh(f))
             .collect();
@@ -652,7 +671,8 @@ fn post_tool_use(
         }
     }
     for name in targets.names.iter().take(MAX_TARGETS) {
-        let facts: Vec<Fact> = name_facts(&g, name, tier)
+        let facts: Vec<Fact> = annotator
+            .name_facts(name)
             .into_iter()
             .filter(|f| seen.fresh(f))
             .collect();
@@ -664,7 +684,7 @@ fn post_tool_use(
         return Ok(None);
     }
     // Share the budget between sections; render() trims each to its share.
-    let share = max_chars / sections.len();
+    let share = opts.max_chars / sections.len();
     let mut out = String::new();
     let mut shown: Vec<&Fact> = Vec::new();
     for (header, facts) in &sections {
@@ -677,7 +697,7 @@ fn post_tool_use(
 }
 
 /// Handle one hook event. Returns the JSON reply to print, if any.
-fn respond(input: &Value, root_override: Option<&Path>, max_chars: usize) -> Result<Option<Value>> {
+fn respond(input: &Value, root_override: Option<&Path>, opts: &Options) -> Result<Option<Value>> {
     let event = input["hook_event_name"].as_str().unwrap_or_default();
     let cwd = match input["cwd"].as_str() {
         Some(c) => PathBuf::from(c),
@@ -691,8 +711,8 @@ fn respond(input: &Value, root_override: Option<&Path>, max_chars: usize) -> Res
     .context("resolving repository root")?;
     let seen = Seen::load(&root, input["session_id"].as_str());
     let text = match event {
-        "SessionStart" => session_start(&root, input, &seen)?,
-        "PostToolUse" => post_tool_use(&root, &cwd, input, &seen, max_chars)?,
+        "SessionStart" => session_start(&root, input, &seen, opts)?,
+        "PostToolUse" => post_tool_use(&root, &cwd, input, &seen, opts)?,
         _ => None,
     };
     Ok(text.map(
@@ -702,7 +722,7 @@ fn respond(input: &Value, root_override: Option<&Path>, max_chars: usize) -> Res
 
 /// Entry point for `strata-graph hook`. Never returns an error to the agent:
 /// failures are reported on stderr (visible in the agent's debug output).
-pub fn run(root_override: Option<&Path>, max_chars: usize) -> Result<()> {
+pub fn run(root_override: Option<&Path>, opts: &Options) -> Result<()> {
     let mut raw = String::new();
     if let Err(e) = std::io::stdin().take(MAX_INPUT).read_to_string(&mut raw) {
         eprintln!("strata-graph hook: could not read input: {e}");
@@ -710,7 +730,7 @@ pub fn run(root_override: Option<&Path>, max_chars: usize) -> Result<()> {
     }
     let reply = serde_json::from_str::<Value>(&raw)
         .context("hook input is not JSON")
-        .and_then(|input| respond(&input, root_override, max_chars));
+        .and_then(|input| respond(&input, root_override, opts));
     match reply {
         Ok(Some(v)) => println!("{v}"),
         Ok(None) => {}
@@ -735,11 +755,12 @@ fn hook_entry(matcher: Option<&str>, command: &str, timeout: Option<u64>) -> Val
     if let Some(t) = timeout {
         handler["timeout"] = json!(t);
     }
-    let mut group = json!({ "hooks": [handler] });
+    let mut group = serde_json::Map::new();
     if let Some(m) = matcher {
-        group["matcher"] = json!(m);
+        group.insert("matcher".into(), json!(m));
     }
-    group
+    group.insert("hooks".into(), json!([handler]));
+    Value::Object(group)
 }
 
 /// Add our hook groups to `settings`, leaving every other key and hook as

@@ -11,12 +11,22 @@ pub type NodeId = u32;
 pub enum NodeKind {
     /// A source file (Python module or TypeScript/JavaScript file).
     Module,
-    /// A class or, in TypeScript, an interface.
+    /// A class.
     Class,
+    /// A TypeScript interface.
+    Interface,
     /// A function not defined directly in a class body.
     Function,
     /// A function defined in a class or interface body.
     Method,
+}
+
+impl NodeKind {
+    /// Classes and interfaces: kinds that have members, bases and
+    /// subtypes. Resolution treats both alike.
+    pub fn is_classlike(self) -> bool {
+        matches!(self, NodeKind::Class | NodeKind::Interface)
+    }
 }
 
 /// A definition in the repo.

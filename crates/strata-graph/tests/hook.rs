@@ -231,7 +231,11 @@ fn install_hooks_merges_into_existing_settings() {
     let root = workspace("install");
     let settings = root.join(".claude/settings.json");
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
-    fs::write(&settings, r#"{"permissions": {"allow": ["Bash(ls)"]}}"#).unwrap();
+    fs::write(
+        &settings,
+        r#"{"permissions": {"allow": ["Bash(ls)"]}, "env": {"A": "1"}}"#,
+    )
+    .unwrap();
 
     let run = |args: &[&str]| {
         let out = Command::new(env!("CARGO_BIN_EXE_strata-graph"))
@@ -247,7 +251,14 @@ fn install_hooks_merges_into_existing_settings() {
         String::from_utf8(out.stdout).unwrap()
     };
     assert!(run(&["--agent", "claude"]).contains("added SessionStart and PostToolUse hook(s)"));
-    let v: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+    let text = fs::read_to_string(&settings).unwrap();
+    // The user's keys keep their place; ours are added after them.
+    assert!(text.starts_with("{\n  \"permissions\""), "{text}");
+    assert!(
+        text.contains("\"matcher\": \"Read|Grep|Bash\",\n        \"hooks\""),
+        "{text}"
+    );
+    let v: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["permissions"]["allow"][0], "Bash(ls)");
     assert_eq!(
         v["hooks"]["PostToolUse"][0]["hooks"][0]["command"],

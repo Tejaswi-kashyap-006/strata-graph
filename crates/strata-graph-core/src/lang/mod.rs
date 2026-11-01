@@ -49,8 +49,11 @@ pub fn parse(rel_path: &str, source: &str) -> anyhow::Result<ParsedFile> {
 /// A definition as found in the syntax tree, before nesting is computed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawDef {
-    /// A class (or TypeScript interface) rather than a function.
+    /// A class or TypeScript interface rather than a function.
     pub is_class: bool,
+    /// A TypeScript interface (`is_class` is also set).
+    #[serde(default)]
+    pub is_interface: bool,
     /// The defined name.
     pub name: String,
     /// Start of the definition node (for arrow-function consts, the declarator).

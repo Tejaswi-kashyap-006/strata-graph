@@ -103,7 +103,7 @@ pub fn context_pack(
     );
     budget = budget.saturating_sub(out.len());
 
-    if let Some(class) = n.parent.filter(|p| g.node(*p).kind == NodeKind::Class) {
+    if let Some(class) = n.parent.filter(|p| g.node(*p).kind.is_classlike()) {
         let line = format!("in class: {}\n", g.node(class).qname);
         out.push_str(&line);
         budget = budget.saturating_sub(line.len());
@@ -117,7 +117,7 @@ pub fn context_pack(
         budget = budget.saturating_sub(excerpt.len() + 15);
     }
 
-    if n.kind == NodeKind::Class {
+    if n.kind.is_classlike() {
         let bases: Vec<String> = g
             .walk(
                 &[id],

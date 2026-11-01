@@ -2,7 +2,7 @@
 
 A code graph for coding agents. strata-graph parses a Python, TypeScript or JavaScript repository into a graph of modules, classes, functions and the calls, imports and inheritance between them. Every edge carries a confidence tier, so an agent can see who calls what, and how sure that answer is, without reading files to find out.
 
-> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI, a Python SDK, an MCP server and Claude Code / Codex hooks work today. Next: adaptive delivery and the public eval against grep-only agents. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md), [week 3: delivery](docs/gates/week-3-delivery.md).
+> **Status: week 4 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI, a Python SDK, an MCP server, and Claude Code / Codex hooks with repo-aware delivery density work today. Next: the public eval against grep-only agents. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md), [week 3: delivery](docs/gates/week-3-delivery.md), [week 4: adaptive delivery](docs/gates/week-4-adaptive-delivery.md).
 
 ## Why
 
@@ -25,6 +25,7 @@ g.impact("Invoice.total")                      # transitive callers and subclass
 g.path("app.main", "db.save")                  # shortest call path, or None
 g.search("invoice tot")                        # prefix name search
 g.context("Invoice.total", max_tokens=1500)    # text pack: source, class, callers, callees
+g.annotate("billing/invoice.py", density="auto")  # in-band facts for one file, as hooks deliver them
 ```
 
 Each query first checks for changed files (about 70 ms on django) and re-indexes only those, so answers match the code on disk. Pass `auto_refresh=False` to `open` and call `g.refresh()` yourself if you prefer. Queries default to `min_tier="t0"`, which leaves ambiguous edges out.
@@ -40,6 +41,7 @@ $B --root path/to/repo impact Invoice.total
 $B --root path/to/repo path app.main db.save
 $B --root path/to/repo search "invoice tot"
 $B --root path/to/repo context Invoice.total    # source, class, callers and callees in ~1500 tokens
+$B --root path/to/repo annotate billing/invoice.py --lines 10-60   # what a hook adds after reading those lines
 $B --root path/to/repo watch                    # keep the index fresh as files change
 ```
 
@@ -67,7 +69,8 @@ Agents rarely call an optional tool, so strata-graph also puts graph facts into 
 
 ```text
 [strata-graph] django/utils/text.py:470-529
-L481-498 slugify (function): called by 2: django.template.defaultfilters.slugify T1, utils_tests.test_text.TestUtilsText.test_slugify T1
+L460-477 unescape_string_literal (function): called by 4: django.contrib.admin.options.ModelAdmin.get_search_results T1, django.template.base.Variable.__init__ T1, 2 in tests
+L481-498 slugify (function): called by 2: django.template.defaultfilters.slugify T1, 1 in tests
 L501-505 camel_case_to_spaces (function): called by 1: django.db.models.options.Options.contribute_to_class T1
 ```
 
@@ -80,9 +83,13 @@ strata-graph install-hooks --agent codex    # adds hooks to .codex/hooks.json; a
 - Codex: hooks see shell commands only, which is how Codex reads code. `rg`, `grep`, `git grep`, `cat`, `nl`, `head`, `tail` and `sed -n` are understood, including pipelines (`nl -ba f.py | sed -n '1,80p'`) and `cd dir && ...`.
 - At session start the hook brings the index up to date and explains the tiers once. A tool call never builds a missing index; it adds nothing until one exists.
 - Each fact is sent once per session (again after `/clear` or compaction). An annotation is at most 2,000 characters (`--max-chars`); when facts don't fit, the ones with the most relations are kept.
+- Code outside tests is named first; test callers and subclasses are counted (`2 in tests`) and named only when nothing else uses a definition. Calls to widely used helpers (hubs: the top 1% by callers, and at least 20) are counted, not named.
+- Classes say what constructs them; TypeScript interfaces say what implements them.
 - The hook never edits files and never fails a tool call. If anything goes wrong it adds nothing and logs to stderr.
 
-On django an annotation takes about 0.2 s, on hono about 20 ms.
+**Density.** `--density` (or `density=` in Python) picks how much is said: `full` (callers and callees), `capped` (at most two callees each), `inverse` (only what depends on a definition), or `auto`. `auto` applies the CodeAnchor heuristic to the repo's average resolved call out-degree: under 5 → full, over 8 → inverse, between → capped. On every repo measured so far the average is 1.7–2.2, so `auto` currently means `full`; the week-5 eval will tune the thresholds. `strata-graph stats` shows a repo's shape and the density `auto` picks.
+
+On django (531k lines) an annotation takes a median of 250 ms (p95 316 ms); on hono, zod and flask under 30 ms.
 
 ## Languages
 

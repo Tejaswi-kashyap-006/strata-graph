@@ -3,6 +3,8 @@
 
 # inheritance, this, super, class-field initialisers
 INHERITS T1 src/billing/invoice.Invoice -> src/core/base.Model
+INHERITS T1 src/core/memory_repo.MemoryRepo -> src/core/base.Repo
+CALLS T1 src/core/memory_repo.lookup -> src/core/base.Repo.find
 CALLS T1 src/billing/invoice.Invoice.total -> src/billing/invoice.Invoice.subtotal
 CALLS T1 src/billing/invoice.Invoice.total -> src/billing/tax.TaxCalculator.compute
 CALLS T1 src/billing/invoice.Invoice.save -> src/core/base.Model.save

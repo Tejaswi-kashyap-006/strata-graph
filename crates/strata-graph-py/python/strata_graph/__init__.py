@@ -95,6 +95,30 @@ class Graph:
         LLM prompt, trimmed to about `max_tokens` tokens."""
         return self._g.context(symbol, max_tokens, min_tier)
 
+    def annotate(
+        self,
+        file: str,
+        start: int = 1,
+        end: int | None = None,
+        density: str = "auto",
+        max_chars: int = 2000,
+        min_tier: str = "t0",
+    ) -> str | None:
+        """Graph facts for lines `start`..`end` of `file` (relative to the repo root),
+        as agent hooks deliver them: callers, callees, bases and subtypes of each
+        definition there. None if no definition overlaps those lines.
+
+        `density` is "full", "capped" (at most two callees each), "inverse" (only
+        what depends on each definition), or "auto", which picks from the repo's
+        call-graph shape (see `shape`).
+        """
+        return self._g.annotate(file, start, end, density, max_chars, min_tier)
+
+    def shape(self) -> dict[str, Any]:
+        """The repo's call-graph shape (average out-degree, hubs) and the density
+        that ``density="auto"`` picks for it."""
+        return _obj(self._g.shape())
+
     def path(
         self, source: str, target: str, max_depth: int = 8, min_tier: str = "t0"
     ) -> list[str] | None:

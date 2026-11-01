@@ -39,7 +39,7 @@ pytest crates/strata-graph-py/tests
 1. **Add expectations first.** Put the case in a fixture under `crates/strata-graph-core/tests/fixtures/` and the expected edge in its `expected_edges.txt`, written by reading the fixture code, never copied from tool output. Add a `!` line for every false positive you are guarding against.
 2. **Never lint or format fixtures.** They contain deliberately odd code that the tests depend on; `ruff.toml` excludes them.
 3. **Check on real repos.** Index at least one real repo per affected language. Hand-check a sample with `tools/sample_edges.py`, and use `tools/diff_edges.py` against the previous index to sample only the edges your change added. Record the results in `docs/gates/`.
-4. **Bump `RESOLVER_REVISION`** in `crates/strata-graph-core/src/lib.rs`, so existing indexes are re-resolved on upgrade.
+4. **Nothing to bump.** A build script fingerprints the parser and resolver sources (`PARSER_HASH`, `RESOLVER_HASH`). An index written by a different build is re-parsed or re-resolved automatically. Bump `STORE_VERSION` only when the database layout changes.
 5. **Prefer leaving a call unresolved to guessing.** A wrong edge costs an agent more than a missing one.
 
 ## Commits

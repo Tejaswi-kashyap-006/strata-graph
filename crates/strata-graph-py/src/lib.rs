@@ -9,8 +9,10 @@ use std::path::PathBuf;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use strata_graph_core::annotate::{Annotator, Density};
 use strata_graph_core::{
-    context_pack, index_path, open_index, stale_files, update_index, Graph, Store, Tier,
+    context_pack, index_path, needs_update, open_index, stale_files, update_index, Graph, Store,
+    Tier,
 };
 
 create_exception!(
@@ -26,6 +28,10 @@ fn err(e: anyhow::Error) -> PyErr {
 
 fn json<T: serde::Serialize>(v: &T) -> PyResult<String> {
     serde_json::to_string(v).map_err(|e| StrataError::new_err(e.to_string()))
+}
+
+fn density(s: &str) -> PyResult<Density> {
+    s.to_ascii_lowercase().parse().map_err(err)
 }
 
 fn tier(s: &str) -> PyResult<Tier> {
@@ -49,7 +55,7 @@ struct NativeGraph {
 }
 
 impl NativeGraph {
-    /// Pick up file changes before answering, if auto-refresh is on.
+    /// Pick up file (and engine) changes before answering, if auto-refresh is on.
     fn fresh(&mut self, py: Python<'_>) -> PyResult<()> {
         if !self.auto_refresh {
             return Ok(());
@@ -57,7 +63,7 @@ impl NativeGraph {
         let root = self.root.clone();
         let updated = py
             .detach(move || -> anyhow::Result<Option<Graph>> {
-                if stale_files(&root)? == 0 {
+                if !needs_update(&root)? {
                     return Ok(None);
                 }
                 Ok(Some(update_index(&root)?.0))
@@ -166,6 +172,36 @@ impl NativeGraph {
         json(&self.graph.impact(id, depth, tier(min_tier)?))
     }
 
+    /// Graph facts for lines `start..=end` of `file` (repo-relative), as
+    /// agent hooks deliver them, or None if no definition overlaps them.
+    #[pyo3(signature = (file, start=1, end=None, density="auto", max_chars=2000, min_tier="t0"))]
+    #[allow(clippy::too_many_arguments)]
+    fn annotate(
+        &mut self,
+        py: Python<'_>,
+        file: &str,
+        start: u32,
+        end: Option<u32>,
+        density: &str,
+        max_chars: usize,
+        min_tier: &str,
+    ) -> PyResult<Option<String>> {
+        self.fresh(py)?;
+        let file = file.replace('\\', "/");
+        if !self.graph.files.contains_key(&file) {
+            return Err(StrataError::new_err(format!("{file} is not in the index")));
+        }
+        let a = Annotator::new(&self.graph, tier(min_tier)?, self::density(density)?);
+        Ok(a.annotate(&file, start.max(1), end.unwrap_or(u32::MAX), max_chars))
+    }
+
+    /// The repo's call-graph shape and the density `auto` picks, as JSON.
+    fn shape(&mut self, py: Python<'_>) -> PyResult<String> {
+        self.fresh(py)?;
+        let a = Annotator::new(&self.graph, Tier::NameOnly, Density::Auto);
+        json(&serde_json::json!({ "shape": a.shape(), "auto_density": a.density().label() }))
+    }
+
     /// Source, class, callers and callees of `symbol` as text, in about
     /// `max_tokens` tokens.
     #[pyo3(signature = (symbol, max_tokens=1500, min_tier="t0"))]
@@ -221,7 +257,7 @@ fn open(py: Python<'_>, path: &str, auto_refresh: bool) -> PyResult<NativeGraph>
     let r = root.clone();
     let graph = py
         .detach(move || -> anyhow::Result<Graph> {
-            if !index_path(&r).exists() || stale_files(&r)? > 0 {
+            if needs_update(&r)? {
                 Ok(update_index(&r)?.0)
             } else {
                 open_index(&r)

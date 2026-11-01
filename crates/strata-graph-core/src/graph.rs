@@ -287,7 +287,7 @@ impl Graph {
     /// subclasses. For a class, its methods' callers are included too.
     pub fn impact(&self, id: NodeId, depth: u32, min_tier: Tier) -> Vec<Hit> {
         let mut starts = vec![id];
-        if self.node(id).kind == NodeKind::Class {
+        if self.node(id).kind.is_classlike() {
             starts.extend(
                 self.out_edges[id as usize]
                     .iter()

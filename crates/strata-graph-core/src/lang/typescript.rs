@@ -119,7 +119,8 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
             let start = node.start_byte();
             fn_to_def.insert(get("fn").map_or(start, |f| f.start_byte()), start);
             defs.push(RawDef {
-                is_class: *kind == "def.class",
+                is_class: *kind == "def.class" || *kind == "def.interface",
+                is_interface: *kind == "def.interface",
                 name: text(name),
                 start_byte: start,
                 end_byte: node.end_byte(),

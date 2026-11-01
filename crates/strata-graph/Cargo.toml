@@ -14,7 +14,8 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
-serde_json.workspace = true
+# preserve_order: rewriting an agent settings file keeps its key order.
+serde_json = { workspace = true, features = ["preserve_order"] }
 clap = { version = "4", features = ["derive"] }
 notify-debouncer-mini = "0.7"
 strata-graph-core = { path = "../strata-graph-core", version = "0.1.0-alpha.0" }

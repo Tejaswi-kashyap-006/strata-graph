@@ -5,6 +5,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## Unreleased
 
 ### Added
+- Delivery density: `full`, `capped`, `inverse` and `auto` (picked from the repo's call out-degree). Calls to hubs are counted, not named; test callers and subclasses are counted after real code. `strata-graph annotate`, `Graph.annotate` and `Graph.shape` in Python, `--density` on the hook, and a `delivery` section in `stats`.
+- TypeScript interfaces are their own node kind (`interface`), so delivery says "implemented by" and classes say "constructed by".
+- The index is stamped with fingerprints of the parser and resolver sources: an index written by a different build is re-parsed or re-resolved automatically, with no revision number to bump by hand. `needs_update()` reports it.
 - MCP server (`strata-graph mcp`, stdio) with seven read-only tools. Supports MCP 2024-11-05 to 2025-11-25 and the stateless 2026-07-28 revision. Answers refresh changed files first.
 - Context packs: one symbol's source, class, bases and subclasses, callers and callees in a token budget (`context` in the CLI, `Graph.context` in Python, `strata_context` over MCP).
 - Agent hooks (`strata-graph hook`, `strata-graph install-hooks --agent claude|codex`): graph facts appended to file reads and code searches in Claude Code (Read, Grep, Bash) and Codex (shell commands). Facts are sent once per session, trimmed to a budget, and never block a tool call.
@@ -15,6 +18,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - Type stubs for the native Python module.
 
 ### Fixed
+- Queries (hooks, MCP, CLI, Python) served a graph resolved by an older engine until a file changed. They now re-resolve first.
+- `install-hooks` rewrote an agent settings file with its keys sorted; it now keeps their order.
 - `watch` ignored TypeScript/JavaScript files and tsconfig/package.json changes; it now reacts to every indexed language and to import settings.
 - A second process updating the index while a long update ran (over 5 s, as on large repos) failed with "database is locked". Writers now wait up to 30 s and take the write lock up front.
 

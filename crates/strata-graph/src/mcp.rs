@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::{json, Value};
 use strata_graph_core::{
-    context_pack, index_path, stale_files, tree_order, update_index, Graph, Hit, Store, Tier,
+    context_pack, index_path, needs_update, tree_order, update_index, Graph, Hit, Store, Tier,
 };
 
 /// The stateless revision: version per request, `server/discover`.
@@ -252,7 +252,7 @@ impl Server {
     fn graph(&mut self) -> Result<&Graph> {
         let stale = match &self.graph {
             None => true,
-            Some(_) => !index_path(&self.root).exists() || stale_files(&self.root)? > 0,
+            Some(_) => needs_update(&self.root)?,
         };
         if stale {
             let (g, report) = update_index(&self.root)?;

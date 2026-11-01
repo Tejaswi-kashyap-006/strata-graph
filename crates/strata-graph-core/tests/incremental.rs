@@ -4,7 +4,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use strata_graph_core::{open_index, stale_files, update_index, EdgeKind, Graph, Store, Tier};
+use strata_graph_core::{
+    needs_update, open_index, stale_files, update_index, EdgeKind, Graph, Store, Tier,
+};
 
 fn copy_dir(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
@@ -131,10 +133,13 @@ fn engine_change_forces_reresolve() {
     // Simulate an index written by an older engine.
     Store::open(&path)
         .unwrap()
-        .set_meta_for_tests("config", "0.0.0+r0:{}")
+        .set_meta_for_tests("config", "0.0.0+0000000000000000:{}")
         .unwrap();
 
+    assert_eq!(stale_files(&root).unwrap(), 0, "no source file changed");
+    assert!(needs_update(&root).unwrap(), "but the engine did");
     let (g2, r2) = update_index(&root).unwrap();
+    assert!(!needs_update(&root).unwrap());
     assert_eq!(
         r2.parsed, 0,
         "cached facts are reused; only resolution reruns"
@@ -142,7 +147,11 @@ fn engine_change_forces_reresolve() {
     assert_eq!(g2.edges.len(), g1.edges.len());
     let stamp = Store::open(&path).unwrap().meta("config").unwrap().unwrap();
     assert!(
-        stamp.starts_with(&format!("{}+r", env!("CARGO_PKG_VERSION"))),
+        stamp.starts_with(&format!(
+            "{}+{}:",
+            env!("CARGO_PKG_VERSION"),
+            strata_graph_core::RESOLVER_HASH
+        )),
         "index was not re-resolved: {stamp}"
     );
     fs::remove_dir_all(&root).ok();
@@ -197,5 +206,22 @@ fn an_update_waits_out_a_slow_writer() {
     holder.join().unwrap();
     assert_eq!(r.parsed, 1);
     assert!(g.nodes.iter().any(|n| n.qname == "shop.extra.extra"));
+    fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn parser_change_reparses_every_file() {
+    // Cached facts are only valid for the parser that produced them.
+    let root = workspace("parser");
+    let (_, r1) = update_index(&root).unwrap();
+    let path = strata_graph_core::index_path(&root);
+    Store::open(&path)
+        .unwrap()
+        .set_meta_for_tests("store_version", "4:0000000000000000")
+        .unwrap();
+    let (_, r2) = update_index(&root).unwrap();
+    assert_eq!(r2.parsed, r1.files, "every file must be parsed again");
+    let (_, r3) = update_index(&root).unwrap();
+    assert_eq!(r3.parsed, 0, "and then reused");
     fs::remove_dir_all(&root).ok();
 }

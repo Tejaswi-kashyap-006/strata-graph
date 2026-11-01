@@ -93,3 +93,31 @@ def test_manual_refresh(repo: Path) -> None:
     report = g.refresh()
     assert report["parsed"] == 1
     assert g.find("ping_extra")[0]["qname"] == "shop.extra.ping_extra"
+
+
+def test_annotate(repo: Path) -> None:
+    g = strata_graph.open(str(repo))
+    text = g.annotate("shop/billing/tax.py")
+    assert text is not None
+    assert text.startswith("[strata-graph] shop/billing/tax.py\n")
+    assert "TaxCalculator.compute (method): called by 2: shop.api.quote T1" in text
+    assert "calls 1: round_money T1" in text
+
+    inverse = g.annotate("shop/billing/tax.py", density="inverse")
+    assert inverse is not None and "calls 1:" not in inverse
+
+    part = g.annotate("shop/billing/tax.py", start=5, end=6)
+    assert part is not None and part.startswith("[strata-graph] shop/billing/tax.py:5-6\n")
+    assert g.annotate("shop/billing/tax.py", start=9000, end=9001) is None
+
+    with pytest.raises(strata_graph.StrataError):
+        g.annotate("shop/billing/tax.py", density="dense")
+    with pytest.raises(strata_graph.StrataError):
+        g.annotate("not/indexed.py")
+
+
+def test_shape(repo: Path) -> None:
+    shape = strata_graph.open(str(repo)).shape()
+    assert shape["auto_density"] in {"full", "capped", "inverse"}
+    assert shape["shape"]["avg_out_degree"] > 0
+    assert {"hub_min_callers", "hubs", "hub_call_share"} <= shape["shape"].keys()

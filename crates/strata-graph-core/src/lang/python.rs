@@ -84,6 +84,7 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
         if let (Some((kind, node)), Some((_, name))) = (def, name) {
             defs.push(RawDef {
                 is_class: *kind == "def.class",
+                is_interface: false,
                 name: text(*name),
                 start_byte: node.start_byte(),
                 end_byte: node.end_byte(),

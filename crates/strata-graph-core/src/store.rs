@@ -17,7 +17,13 @@ use crate::lang::ParsedFile;
 use crate::model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 
 /// Bump when the schema or the parsed-facts format changes; old stores are rebuilt.
-pub const STORE_VERSION: i64 = 3;
+pub const STORE_VERSION: i64 = 4;
+
+/// Layout version plus the parser fingerprint: cached facts from another
+/// parser build are dropped and every file is parsed again.
+fn store_stamp() -> String {
+    format!("{STORE_VERSION}:{}", crate::PARSER_HASH)
+}
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -74,6 +80,7 @@ fn kind_label(k: NodeKind) -> &'static str {
     match k {
         NodeKind::Module => "module",
         NodeKind::Class => "class",
+        NodeKind::Interface => "interface",
         NodeKind::Function => "function",
         NodeKind::Method => "method",
     }
@@ -83,6 +90,7 @@ fn parse_kind(s: &str) -> Result<NodeKind> {
     Ok(match s {
         "module" => NodeKind::Module,
         "class" => NodeKind::Class,
+        "interface" => NodeKind::Interface,
         "function" => NodeKind::Function,
         "method" => NodeKind::Method,
         other => bail!("unknown node kind {other:?} in index"),
@@ -137,16 +145,15 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
         let mut store = Store { conn };
-        let version: Option<i64> = store
+        let version: Option<String> = store
             .conn
             .query_row(
                 "SELECT value FROM meta WHERE key = 'store_version'",
                 [],
-                |r| r.get::<_, String>(0),
+                |r| r.get(0),
             )
-            .optional()?
-            .and_then(|v| v.parse().ok());
-        if version != Some(STORE_VERSION) {
+            .optional()?;
+        if version.as_deref() != Some(store_stamp().as_str()) {
             store.reset()?;
         }
         Ok(store)
@@ -160,7 +167,7 @@ impl Store {
         self.conn.execute_batch(SCHEMA)?;
         self.conn.execute(
             "INSERT INTO meta(key, value) VALUES ('store_version', ?1)",
-            params![STORE_VERSION.to_string()],
+            params![store_stamp()],
         )?;
         Ok(())
     }

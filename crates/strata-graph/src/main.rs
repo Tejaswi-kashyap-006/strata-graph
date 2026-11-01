@@ -12,8 +12,9 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
+use strata_graph_core::annotate::{Annotator, Density};
 use strata_graph_core::{
-    index_path, open_index, stale_files, update_index, Graph, Hit, IndexReport, Store, Tier,
+    index_path, needs_update, open_index, update_index, Graph, Hit, IndexReport, Store, Tier,
 };
 
 #[derive(Parser)]
@@ -67,6 +68,22 @@ enum Cmd {
         /// Largest annotation, in characters.
         #[arg(long, default_value_t = hook::DEFAULT_MAX_CHARS)]
         max_chars: usize,
+        /// auto, full, capped or inverse (callers only).
+        #[arg(long, default_value = "auto")]
+        density: Density,
+    },
+    /// Graph facts for FILE (or --lines A-B of it), as hooks deliver them.
+    Annotate {
+        file: PathBuf,
+        /// Line range, e.g. 10-40.
+        #[arg(long)]
+        lines: Option<String>,
+        /// Largest annotation, in characters.
+        #[arg(long, default_value_t = hook::DEFAULT_MAX_CHARS)]
+        max_chars: usize,
+        /// auto, full, capped or inverse (callers only).
+        #[arg(long, default_value = "auto")]
+        density: Density,
     },
     /// Register `strata-graph hook` in an agent's project settings.
     InstallHooks {
@@ -162,16 +179,13 @@ fn load(root: &Path, refresh: bool) -> Result<Graph> {
         eprintln!("strata-graph: no index yet, building it");
         return Ok(update_index(root)?.0);
     }
-    if refresh {
-        let stale = stale_files(root)?;
-        if stale > 0 {
-            let (g, r) = update_index(root)?;
-            eprintln!(
-                "strata-graph: {stale} file(s) changed; index updated in {} ms",
-                r.elapsed_ms
-            );
-            return Ok(g);
-        }
+    if refresh && needs_update(root)? {
+        let (g, r) = update_index(root)?;
+        eprintln!(
+            "strata-graph: index updated ({} file(s) parsed) in {} ms",
+            r.parsed, r.elapsed_ms
+        );
+        return Ok(g);
     }
     open_index(root)
 }
@@ -218,6 +232,47 @@ fn print_nodes(g: &Graph, ids: &[u32], json: bool) -> Result<()> {
     Ok(())
 }
 
+/// `file` (absolute, relative to `root`, or relative to the current
+/// directory) as a path relative to `root` with `/` separators.
+fn repo_file(root: &Path, file: &Path) -> Result<String> {
+    let in_root = root.join(file);
+    let file = if file.is_relative() && in_root.exists() {
+        in_root.as_path()
+    } else {
+        file
+    };
+    let abs = file
+        .canonicalize()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+    let rel = abs
+        .strip_prefix(root)
+        .map_err(|_| anyhow::anyhow!("{} is outside {}", abs.display(), root.display()))?;
+    Ok(rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+/// "10-40" or "10" as an inclusive 1-based line range.
+fn parse_lines(r: &str) -> Result<(u32, u32)> {
+    let num = |s: &str| -> Result<u32> {
+        s.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|&n| n >= 1)
+            .ok_or_else(|| anyhow::anyhow!("bad line number {s:?} in --lines {r:?}"))
+    };
+    let (a, b) = match r.split_once('-') {
+        Some((a, b)) => (num(a)?, num(b)?),
+        None => (num(r)?, num(r)?),
+    };
+    if b < a {
+        anyhow::bail!("--lines {r:?} ends before it starts");
+    }
+    Ok((a, b))
+}
+
 /// Whether a change to `path` can change the graph: a source file in any
 /// indexed language, or a file that sets import resolution.
 fn is_index_input(path: &Path) -> bool {
@@ -255,8 +310,8 @@ fn watch(root: &Path, json: bool) -> Result<()> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if let Cmd::Hook { max_chars } = cli.cmd {
-        return hook::run(cli.root.as_deref(), max_chars);
+    if let Cmd::Hook { max_chars, density } = cli.cmd {
+        return hook::run(cli.root.as_deref(), &hook::Options { max_chars, density });
     }
     let root = cli
         .root
@@ -283,6 +338,27 @@ fn main() -> Result<()> {
         Cmd::Watch => watch(&root, cli.json)?,
         Cmd::Mcp => mcp::serve(&root)?,
         Cmd::Hook { .. } => unreachable!("handled before the root is resolved"),
+        Cmd::Annotate {
+            file,
+            lines,
+            max_chars,
+            density,
+        } => {
+            let g = load(&root, refresh)?;
+            let rel = repo_file(&root, &file)?;
+            if !g.files.contains_key(&rel) {
+                anyhow::bail!("{rel} is not in the index (not a supported source file?)");
+            }
+            let (start, end) = match lines.as_deref() {
+                Some(r) => parse_lines(r)?,
+                None => (1, u32::MAX),
+            };
+            let a = Annotator::new(&g, Tier::NameOnly, density);
+            match a.annotate(&rel, start, end, max_chars) {
+                Some(text) => print!("{text}"),
+                None => println!("(no definitions in that range)"),
+            }
+        }
         Cmd::InstallHooks {
             agent,
             local,
@@ -303,7 +379,13 @@ fn main() -> Result<()> {
         }
         Cmd::Stats => {
             let g = load(&root, refresh)?;
-            println!("{}", serde_json::to_string_pretty(&g.summary())?);
+            let mut summary = g.summary();
+            let a = Annotator::new(&g, Tier::NameOnly, Density::Auto);
+            summary["delivery"] = serde_json::json!({
+                "shape": a.shape(),
+                "auto_density": a.density().label(),
+            });
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Cmd::Find { query } => {
             let g = load(&root, refresh)?;
@@ -369,6 +451,15 @@ fn main() -> Result<()> {
 mod tests {
     use super::is_index_input;
     use std::path::Path;
+
+    #[test]
+    fn line_ranges_parse_strictly() {
+        assert_eq!(super::parse_lines("10-40").unwrap(), (10, 40));
+        assert_eq!(super::parse_lines("7").unwrap(), (7, 7));
+        for bad in ["0-3", "9-2", "a-b", "", "-4"] {
+            assert!(super::parse_lines(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn watch_reacts_to_every_indexed_language_and_config() {

@@ -137,7 +137,7 @@ impl Resolver {
             return None;
         }
         match self.kind(container) {
-            NodeKind::Class => self.mro_lookup(container, name),
+            NodeKind::Class | NodeKind::Interface => self.mro_lookup(container, name),
             NodeKind::Module => {
                 if let Some(&c) = self.children.get(&container).and_then(|m| m.get(name)) {
                     return Some(c);
@@ -193,7 +193,7 @@ impl Resolver {
         while let Some(id) = s {
             let k = self.kind(id);
             let visible = matches!(k, NodeKind::Function | NodeKind::Method)
-                || (k == NodeKind::Class && Some(id) == scope);
+                || (k.is_classlike() && Some(id) == scope);
             if visible {
                 if let Some(&c) = self.children.get(&id).and_then(|m| m.get(name)) {
                     return Res::Found(c, Tier::Scoped);
@@ -252,7 +252,7 @@ impl Resolver {
     fn enclosing_class(&self, scope: Option<NodeId>) -> Option<NodeId> {
         let mut s = scope;
         while let Some(id) = s {
-            if self.kind(id) == NodeKind::Class {
+            if self.kind(id).is_classlike() {
                 return Some(id);
             }
             s = self.nodes[id as usize].parent;
@@ -285,7 +285,7 @@ impl Resolver {
     /// declared return class of a function or method.
     fn value_class(&self, n: NodeId) -> Option<NodeId> {
         match self.kind(n) {
-            NodeKind::Class => Some(n),
+            NodeKind::Class | NodeKind::Interface => Some(n),
             NodeKind::Module => None,
             NodeKind::Function | NodeKind::Method => {
                 if let Some((file, scope, expr)) = self.returns.get(&n) {
@@ -298,7 +298,7 @@ impl Resolver {
                             _ => None,
                         }
                     };
-                    return c.filter(|c| self.kind(*c) == NodeKind::Class);
+                    return c.filter(|c| self.kind(*c).is_classlike());
                 }
                 // No annotation: infer from what the function returns, if every
                 // returned value (other than None) is the same repo class.
@@ -582,12 +582,15 @@ impl Resolver {
             {
                 match self.resolve_dotted(file, scope, recv) {
                     Res::Found(n, t)
-                        if matches!(self.kind(n), NodeKind::Module | NodeKind::Class) =>
+                        if matches!(
+                            self.kind(n),
+                            NodeKind::Module | NodeKind::Class | NodeKind::Interface
+                        ) =>
                     {
                         if let Some(m) = self.member(n, callee, 0) {
                             return Ok(vec![(m, t)]);
                         }
-                        if self.kind(n) == NodeKind::Class && self.has_external_ancestor(n) {
+                        if self.kind(n).is_classlike() && self.has_external_ancestor(n) {
                             return Err(());
                         }
                         // A repo module or class without that member: leave it
@@ -719,9 +722,11 @@ pub fn build(mut parsed: Vec<ParsedFile>, config: &ProjectConfig) -> Graph {
             }
             let parent = stack.last().map(|(_, id)| *id).unwrap_or(module_id);
             let pkind = nodes[parent as usize].kind;
-            let kind = if d.is_class {
+            let kind = if d.is_interface {
+                NodeKind::Interface
+            } else if d.is_class {
                 NodeKind::Class
-            } else if pkind == NodeKind::Class {
+            } else if pkind.is_classlike() {
                 NodeKind::Method
             } else {
                 NodeKind::Function
@@ -902,7 +907,7 @@ pub fn build(mut parsed: Vec<ParsedFile>, config: &ProjectConfig) -> Graph {
     for n in &nodes {
         let key = (file_lang[n.file.as_str()], n.name.clone());
         match n.kind {
-            NodeKind::Function | NodeKind::Class => {
+            NodeKind::Function | NodeKind::Class | NodeKind::Interface => {
                 callables_by_name.entry(key).or_default().push(n.id)
             }
             NodeKind::Method => methods_by_name.entry(key).or_default().push(n.id),
@@ -1010,7 +1015,7 @@ pub fn build(mut parsed: Vec<ParsedFile>, config: &ProjectConfig) -> Graph {
                 r.external_based.insert(class);
             }
             if let Res::Found(base, tier) = res {
-                if r.kind(base) == NodeKind::Class && base != class {
+                if r.kind(base).is_classlike() && base != class {
                     r.bases.entry(class).or_default().push(base);
                     add_edge(
                         &mut edges,
@@ -1036,7 +1041,7 @@ pub fn build(mut parsed: Vec<ParsedFile>, config: &ProjectConfig) -> Graph {
             match &t.target {
                 TypeTarget::Var(v) => {
                     let entry = (fi, scope_id, t.type_expr.clone());
-                    if r.kind(scope_id) == NodeKind::Class {
+                    if r.kind(scope_id).is_classlike() {
                         r.field_types
                             .entry((scope_id, v.clone()))
                             .or_default()

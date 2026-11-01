@@ -39,9 +39,14 @@ pub use model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 pub use resolve::ProjectConfig;
 pub use store::Store;
 
-/// Bumped whenever resolution rules change, so an existing index is rebuilt
-/// by a newer engine even if no source file changed.
-pub const RESOLVER_REVISION: u32 = 5;
+/// Fingerprint of the parser sources (language front ends, query files,
+/// model). An index whose cached facts came from another parser build is
+/// parsed again from scratch.
+pub const PARSER_HASH: &str = env!("STRATA_PARSER_HASH");
+
+/// Fingerprint of the resolver sources. An index resolved by another build
+/// is re-resolved from its cached facts, even if no source file changed.
+pub const RESOLVER_HASH: &str = env!("STRATA_RESOLVER_HASH");
 
 /// Files larger than this are skipped (usually generated or vendored).
 pub const MAX_FILE_BYTES: u64 = 1_000_000;
@@ -192,12 +197,7 @@ pub fn update_index(root: &Path) -> Result<(Graph, IndexReport)> {
     // A new engine or changed import settings (tsconfig paths, workspace
     // packages) re-resolve everything from the cached facts.
     let config = project_config(root);
-    let config_key = format!(
-        "{}+r{}:{}",
-        env!("CARGO_PKG_VERSION"),
-        RESOLVER_REVISION,
-        serde_json::to_string(&config)?
-    );
+    let config_key = format!("{}{}", engine_prefix(), serde_json::to_string(&config)?);
     let config_same = store.meta("config")?.as_deref() == Some(config_key.as_str());
 
     let graph = if changed.is_empty() && removed.is_empty() && config_same && store.has_graph()? {
@@ -227,6 +227,27 @@ pub fn update_index(root: &Path) -> Result<(Graph, IndexReport)> {
 /// Load the last written graph without checking files on disk.
 pub fn open_index(root: &Path) -> Result<Graph> {
     Store::open(&index_path(root))?.load_graph()
+}
+
+/// The engine part of the stamp an index is resolved under.
+fn engine_prefix() -> String {
+    format!("{}+{}:", env!("CARGO_PKG_VERSION"), RESOLVER_HASH)
+}
+
+/// Whether [`update_index`] would change anything: there is no index yet,
+/// source files were added, removed or modified, or the index was written by
+/// a different engine build. Changed import settings (tsconfig, package.json)
+/// are picked up by the next [`update_index`], not detected here.
+pub fn needs_update(root: &Path) -> Result<bool> {
+    let path = index_path(root);
+    if !path.exists() {
+        return Ok(true);
+    }
+    let store = Store::open(&path)?;
+    let engine_current = store
+        .meta("config")?
+        .is_some_and(|c| c.starts_with(&engine_prefix()));
+    Ok(!engine_current || !store.has_graph()? || stale_files(root)? > 0)
 }
 
 /// Number of source files added, removed, or modified (by size or mtime)

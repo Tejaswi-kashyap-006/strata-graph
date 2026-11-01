@@ -2,7 +2,7 @@
 ; a separate node (const f = () => ..., class fields holding arrows).
 (class_declaration name: (type_identifier) @name) @def.class
 (abstract_class_declaration name: (type_identifier) @name) @def.class
-(interface_declaration name: (type_identifier) @name) @def.class
+(interface_declaration name: (type_identifier) @name) @def.interface
 (function_declaration name: (identifier) @name) @def.function
 (generator_function_declaration name: (identifier) @name) @def.function
 ; Methods count only inside classes and interfaces; object-literal methods are
