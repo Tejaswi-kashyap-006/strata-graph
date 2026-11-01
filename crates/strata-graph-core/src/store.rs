@@ -56,11 +56,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
 /// What the store remembers about a file without loading its facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMeta {
+    /// BLAKE3 hash of the file's bytes.
     pub hash: String,
+    /// Modification time in nanoseconds since the Unix epoch.
     pub mtime_ns: i64,
+    /// Size in bytes.
     pub size: i64,
 }
 
+/// A connection to `.strata/index.db`.
 pub struct Store {
     conn: Connection,
 }
@@ -182,6 +186,7 @@ impl Store {
             .is_some())
     }
 
+    /// Hash, mtime and size of every indexed file, keyed by path.
     pub fn file_meta(&self) -> Result<HashMap<String, FileMeta>> {
         let mut stmt = self
             .conn

@@ -1,3 +1,7 @@
+//! `strata-graph` command-line interface.
+
+#![forbid(unsafe_code)]
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;

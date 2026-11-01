@@ -21,5 +21,5 @@ extension-module = ["pyo3/extension-module"]
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-pyo3 = { version = "0.30", features = ["abi3-py39"] }
+pyo3 = { version = "0.30", features = ["abi3-py310"] }
 strata-graph-core = { path = "../strata-graph-core" }

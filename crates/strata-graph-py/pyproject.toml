@@ -7,7 +7,7 @@ name = "strata-graph"
 description = "A code graph for coding agents: who calls what, and how sure the answer is"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [{ name = "Tejaswi Kashyap" }]
 classifiers = [
     "Programming Language :: Python :: 3",

@@ -42,6 +42,8 @@ fn queries() -> &'static Queries {
     Q.get_or_init(|| {
         let lang = language();
         let q = |name: &str, src: &str| {
+            // Queries are constants compiled into the binary and every one is
+            // exercised by unit tests, so a failure here is a build bug, not bad input.
             Query::new(&lang, src).unwrap_or_else(|e| panic!("bad query {name}: {e}"))
         };
         Queries {

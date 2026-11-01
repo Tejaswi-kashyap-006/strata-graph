@@ -4,10 +4,11 @@ import shutil
 from pathlib import Path
 
 import pytest
-
 import strata_graph
 
-FIXTURE = Path(__file__).resolve().parents[2] / "strata-graph-core" / "tests" / "fixtures" / "py_shop"
+FIXTURE = (
+    Path(__file__).resolve().parents[2] / "strata-graph-core" / "tests" / "fixtures" / "py_shop"
+)
 
 
 @pytest.fixture
@@ -67,9 +68,7 @@ def test_auto_refresh_follows_edits(repo: Path) -> None:
     g = strata_graph.open(str(repo))
     assert g.stale_files() == 0
     views = repo / "shop" / "views.py"
-    views.write_text(
-        views.read_text() + "\n\ndef from_sdk():\n    return show_all(None)\n"
-    )
+    views.write_text(views.read_text() + "\n\ndef from_sdk():\n    return show_all(None)\n")
     assert g.stale_files() == 1
     callers = [h["qname"] for h in g.callers("shop.views.show_all")]
     assert "shop.views.from_sdk" in callers

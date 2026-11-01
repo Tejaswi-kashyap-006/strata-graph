@@ -56,6 +56,8 @@ fn grammar(tsx: bool) -> Language {
 fn build_queries(tsx: bool) -> Queries {
     let lang = grammar(tsx);
     let q = |name: &str, src: &str| {
+        // Queries are constants compiled into the binary and every one is
+        // exercised by unit tests, so a failure here is a build bug, not bad input.
         Query::new(&lang, src).unwrap_or_else(|e| panic!("bad typescript query {name}: {e}"))
     };
     let calls = if tsx {

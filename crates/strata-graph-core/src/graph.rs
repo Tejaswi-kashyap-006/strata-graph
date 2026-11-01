@@ -8,20 +8,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 
+/// Version of the JSON export format written by [`Graph::save`].
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// What the graph records about each indexed file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInfo {
+    /// BLAKE3 hash of the file's bytes when it was indexed.
     pub hash: String,
+    /// Module name the file was given.
     pub module: String,
 }
 
+/// A resolved code graph with lookup indexes for queries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Graph {
+    /// Export format version; see [`SCHEMA_VERSION`].
     pub schema_version: u32,
+    /// All nodes; a node's position is its id.
     pub nodes: Vec<Node>,
+    /// All edges, sorted by source, destination and kind.
     pub edges: Vec<Edge>,
+    /// Indexed files by repo-relative path.
     pub files: BTreeMap<String, FileInfo>,
+    /// Call-resolution counts from the build.
     pub stats: ResolutionStats,
     #[serde(skip)]
     out_edges: Vec<Vec<usize>>,
@@ -33,28 +43,40 @@ pub struct Graph {
     by_name: HashMap<String, Vec<NodeId>>,
 }
 
+/// Which way a traversal follows edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
+    /// From source to destination (e.g. what a function calls).
     Out,
+    /// From destination back to source (e.g. who calls a function).
     In,
 }
 
 /// One node reached by a traversal, with the edge that reached it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Hit {
+    /// The node reached.
     pub node: NodeId,
+    /// Its qualified name.
     pub qname: String,
+    /// Its kind.
     pub kind: NodeKind,
+    /// File that defines it.
     pub file: String,
+    /// First line of its definition.
     pub line: u32,
+    /// Hops from the start of the traversal (1 = direct).
     pub depth: u32,
+    /// Kind of the edge that reached it.
     pub via: EdgeKind,
+    /// Confidence of that edge.
     pub tier: Tier,
     /// Where the edge was observed (e.g. the call site).
     pub at: String,
 }
 
 impl Graph {
+    /// Build a graph from nodes and edges and index it for queries.
     pub fn new(
         nodes: Vec<Node>,
         edges: Vec<Edge>,
@@ -98,10 +120,12 @@ impl Graph {
         }
     }
 
+    /// The node with id `id`. Panics if `id` is not from this graph.
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id as usize]
     }
 
+    /// Write the graph as JSON (an export; the index itself lives in SQLite).
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -112,6 +136,7 @@ impl Graph {
         Ok(())
     }
 
+    /// Read a graph written by [`Graph::save`].
     pub fn load(path: &Path) -> Result<Self> {
         let bytes = std::fs::read(path).with_context(|| {
             format!(
@@ -218,10 +243,12 @@ impl Graph {
         hits
     }
 
+    /// Who calls `id`, up to `depth` hops back, at `min_tier` or better.
     pub fn callers(&self, id: NodeId, depth: u32, min_tier: Tier) -> Vec<Hit> {
         self.walk(&[id], Direction::In, &[EdgeKind::Calls], depth, min_tier)
     }
 
+    /// What `id` calls, up to `depth` hops forward, at `min_tier` or better.
     pub fn callees(&self, id: NodeId, depth: u32, min_tier: Tier) -> Vec<Hit> {
         self.walk(&[id], Direction::Out, &[EdgeKind::Calls], depth, min_tier)
     }
