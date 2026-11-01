@@ -5,12 +5,16 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## Unreleased
 
 ### Added
+- MCP server (`strata-graph mcp`, stdio) with seven read-only tools. Supports MCP 2024-11-05 to 2025-11-25 and the stateless 2026-07-28 revision. Answers refresh changed files first.
+- Context packs: one symbol's source, class, bases and subclasses, callers and callees in a token budget (`context` in the CLI, `Graph.context` in Python, `strata_context` over MCP).
+- Multi-hop results print as a tree: each hit sits under the hit that reached it (`Hit.from`, `tree_order`).
 - Standards enforced in CI: rustdoc with warnings as errors, `cargo audit`, ruff, `mypy --strict`.
 - `CONTRIBUTING.md` with the review rules for resolution changes.
 - Type stubs for the native Python module.
 
 ### Changed
 - Python 3.10 is now the minimum (3.9 reached end-of-life in October 2025).
+- MSRV corrected to Rust 1.90. The earlier 1.82 was never tested, and the dependencies (tree-sitter-language, rusqlite) already need 1.90. A CI job now builds on 1.90.
 - `resolve` split into `resolve::modules` (module names and import specifiers) and `resolve::text`. tsconfig and package.json loading moved to `config`.
 - The core crate forbids `unsafe` code and documents every public item.
 

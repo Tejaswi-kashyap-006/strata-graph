@@ -2,7 +2,7 @@
 
 A code graph for coding agents. strata-graph parses a Python, TypeScript or JavaScript repository into a graph of modules, classes, functions and the calls, imports and inheritance between them. Every edge carries a confidence tier, so an agent can see who calls what, and how sure that answer is, without reading files to find out.
 
-> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI and a Python SDK work today. Next: an MCP server and Claude Code / Codex hooks. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md).
+> **Status: week 3 of a 6-week MVP.** Python, TypeScript and JavaScript indexing, tiered call resolution, an incremental SQLite index, a CLI, a Python SDK and an MCP server work today. Next: Claude Code / Codex hooks that deliver the graph inside what agents already read. Reports: [week 1](docs/gates/week-1-hand-check.md), [week 2](docs/gates/week-2-fresh-and-installable.md), [week 3: TypeScript](docs/gates/week-3-typescript.md).
 
 ## Why
 
@@ -24,6 +24,7 @@ g.callers("billing.tax.round_money", depth=2)  # list of dicts: qname, tier, fil
 g.impact("Invoice.total")                      # transitive callers and subclasses
 g.path("app.main", "db.save")                  # shortest call path, or None
 g.search("invoice tot")                        # prefix name search
+g.context("Invoice.total", max_tokens=1500)    # text pack: source, class, callers, callees
 ```
 
 Each query first checks for changed files (about 70 ms on django) and re-indexes only those, so answers match the code on disk. Pass `auto_refresh=False` to `open` and call `g.refresh()` yourself if you prefer. Queries default to `min_tier="t0"`, which leaves ambiguous edges out.
@@ -38,12 +39,27 @@ $B --root path/to/repo callers billing.tax.round_money --depth 2
 $B --root path/to/repo impact Invoice.total
 $B --root path/to/repo path app.main db.save
 $B --root path/to/repo search "invoice tot"
+$B --root path/to/repo context Invoice.total    # source, class, callers and callees in ~1500 tokens
 $B --root path/to/repo watch                    # keep the index fresh as files change
 ```
 
 Add `--json` for machine-readable output. Queries pick up file changes before answering; `--no-refresh` skips that. The index lives in `.strata/index.db` (add `.strata/` to your `.gitignore`).
 
 On django (531k lines, 2 cores) a cold index takes 6.7 s, an update after editing one file 1.2 s, and an update with no changes 0.18 s.
+
+## MCP server
+
+`strata-graph mcp` serves the graph to any MCP client over stdio. It offers seven read-only tools: `strata_context`, `strata_callers`, `strata_callees`, `strata_impact`, `strata_path`, `strata_find` and `strata_stats`. Before each answer it re-indexes changed files, so results follow edits made during the session.
+
+```sh
+# Claude Code (project scope writes .mcp.json)
+claude mcp add --scope project strata-graph -- strata-graph --root . mcp
+
+# Codex
+codex mcp add strata-graph -- strata-graph --root . mcp
+```
+
+The server speaks MCP 2024-11-05 through 2025-11-25 with the usual `initialize` handshake, and the stateless 2026-07-28 revision (`server/discover`, version in `_meta`). Logs go to stderr. On django, the first call after start takes about 0.3 s and later calls about 60 ms.
 
 ## Languages
 
@@ -80,7 +96,7 @@ When strata-graph is upgraded, an existing index is re-resolved automatically; p
 
 ## Testing
 
-`cargo test --workspace --exclude strata-graph-py` runs unit tests, the golden-edge tests and the incremental-index test. Each fixture's `expected_edges.txt` was written by reading the fixture code, never by copying tool output. Lines starting with `!` guard false positives found on real repos.
+`cargo test --workspace --exclude strata-graph-py` runs unit tests, the golden-edge tests, the incremental-index test and the MCP tests (which start the server and talk JSON-RPC to it). Each fixture's `expected_edges.txt` was written by reading the fixture code, never by copying tool output. Lines starting with `!` guard false positives found on real repos.
 
 The Python tests run against an installed wheel: `pytest crates/strata-graph-py/tests`.
 

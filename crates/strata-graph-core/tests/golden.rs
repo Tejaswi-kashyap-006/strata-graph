@@ -119,3 +119,29 @@ fn py_shop_queries() {
     assert_eq!(back.edges.len(), g.edges.len());
     std::fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn tree_order_puts_each_hit_under_its_parent() {
+    let g = index_repo(&fixture("py_shop")).unwrap();
+    let rm = g.resolve_one("round_money").unwrap();
+    let hits = g.impact(rm, 4, strata_graph_core::Tier::Scoped);
+    assert!(
+        hits.iter().any(|h| h.depth >= 3),
+        "fixture needs a 3-hop chain"
+    );
+    let ordered = strata_graph_core::tree_order(&hits);
+    assert_eq!(ordered.len(), hits.len());
+    for (i, h) in ordered.iter().enumerate() {
+        if h.depth == 1 {
+            assert_eq!(h.from, rm);
+            continue;
+        }
+        // The nearest earlier hit one level up must be the one it came from.
+        let parent = ordered[..i]
+            .iter()
+            .rev()
+            .find(|p| p.depth == h.depth - 1)
+            .expect("a parent precedes every nested hit");
+        assert_eq!(parent.node, h.from, "{} is not under its parent", h.qname);
+    }
+}

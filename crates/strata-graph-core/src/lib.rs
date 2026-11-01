@@ -15,6 +15,7 @@
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod context;
 pub mod graph;
 pub mod lang;
 pub mod model;
@@ -30,7 +31,8 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 pub use config::project_config;
-pub use graph::{Direction, Graph, Hit};
+pub use context::context_pack;
+pub use graph::{tree_order, Direction, Graph, Hit};
 pub use lang::Lang;
 pub use model::{Edge, EdgeKind, Node, NodeId, NodeKind, ResolutionStats, Tier};
 pub use resolve::ProjectConfig;

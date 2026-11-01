@@ -9,7 +9,9 @@ use std::path::PathBuf;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use strata_graph_core::{index_path, open_index, stale_files, update_index, Graph, Store, Tier};
+use strata_graph_core::{
+    context_pack, index_path, open_index, stale_files, update_index, Graph, Store, Tier,
+};
 
 create_exception!(
     _native,
@@ -162,6 +164,27 @@ impl NativeGraph {
         self.fresh(py)?;
         let id = self.one(symbol)?;
         json(&self.graph.impact(id, depth, tier(min_tier)?))
+    }
+
+    /// Source, class, callers and callees of `symbol` as text, in about
+    /// `max_tokens` tokens.
+    #[pyo3(signature = (symbol, max_tokens=1500, min_tier="t0"))]
+    fn context(
+        &mut self,
+        py: Python<'_>,
+        symbol: &str,
+        max_tokens: usize,
+        min_tier: &str,
+    ) -> PyResult<String> {
+        self.fresh(py)?;
+        let id = self.one(symbol)?;
+        Ok(context_pack(
+            &self.root,
+            &self.graph,
+            id,
+            max_tokens,
+            tier(min_tier)?,
+        ))
     }
 
     /// Shortest call path as a JSON list of qualified names, or None.

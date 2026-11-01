@@ -25,7 +25,8 @@ from ._native import open as _open
 __all__ = ["Graph", "StrataError", "__version__", "open"]
 
 Hit = dict[str, Any]
-"""A node reached by a traversal: qname, kind, file, line, depth, via, tier, at."""
+"""A node reached by a traversal: node, qname, kind, file, line, depth, via, tier, at
+(call site), and from (id of the node it was reached from)."""
 
 NodeInfo = dict[str, Any]
 """A symbol: id, kind, qname, name, file, start_line, end_line, parent."""
@@ -88,6 +89,11 @@ class Graph:
     def impact(self, symbol: str, depth: int = 3, min_tier: str = "t0") -> list[Hit]:
         """Transitive callers and subclasses: what may break if `symbol` changes."""
         return _list(self._g.impact(symbol, depth, min_tier))
+
+    def context(self, symbol: str, max_tokens: int = 1500, min_tier: str = "t0") -> str:
+        """Source, enclosing class, callers and callees of `symbol`, as text for an
+        LLM prompt, trimmed to about `max_tokens` tokens."""
+        return self._g.context(symbol, max_tokens, min_tier)
 
     def path(
         self, source: str, target: str, max_depth: int = 8, min_tier: str = "t0"

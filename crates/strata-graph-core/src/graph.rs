@@ -73,6 +73,35 @@ pub struct Hit {
     pub tier: Tier,
     /// Where the edge was observed (e.g. the call site).
     pub at: String,
+    /// The node this one was reached from: the start of the traversal for
+    /// depth 1, otherwise a node at the previous depth.
+    pub from: NodeId,
+}
+
+/// `hits` from one traversal in depth-first tree order: each hit directly
+/// after the hit it was reached from, so indenting by depth draws the real
+/// chain. Breadth-first order would place a depth-3 hit after unrelated
+/// depth-2 hits.
+pub fn tree_order(hits: &[Hit]) -> Vec<&Hit> {
+    let mut children: HashMap<NodeId, Vec<&Hit>> = HashMap::new();
+    let reached: HashSet<NodeId> = hits.iter().map(|h| h.node).collect();
+    let mut roots = Vec::new();
+    for h in hits {
+        if h.depth == 1 || !reached.contains(&h.from) {
+            roots.push(h);
+        } else {
+            children.entry(h.from).or_default().push(h);
+        }
+    }
+    let mut out = Vec::with_capacity(hits.len());
+    let mut stack: Vec<&Hit> = roots.into_iter().rev().collect();
+    while let Some(h) = stack.pop() {
+        out.push(h);
+        if let Some(kids) = children.get(&h.node) {
+            stack.extend(kids.iter().rev());
+        }
+    }
+    out
 }
 
 impl Graph {
@@ -235,6 +264,7 @@ impl Graph {
                         via: e.kind,
                         tier: e.tier,
                         at: format!("{}:{}", e.file, e.line),
+                        from: cur,
                     });
                     queue.push_back((next, d + 1));
                 }

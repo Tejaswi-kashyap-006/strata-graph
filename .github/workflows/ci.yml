@@ -31,7 +31,17 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
-      - name: Tests (unit, hand-checked golden edges, incremental index)
+      - name: Tests (unit, hand-checked golden edges, incremental index, MCP)
+        run: cargo test --workspace --exclude strata-graph-py
+
+  msrv:
+    name: rust (MSRV 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test on the minimum supported Rust
         run: cargo test --workspace --exclude strata-graph-py
 
   python:

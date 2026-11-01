@@ -52,6 +52,17 @@ def test_queries(repo: Path) -> None:
     assert any(n["qname"] == "shop.billing.invoice.Invoice.total" for n in g.search("invoice tot"))
 
 
+def test_context_pack(repo: Path) -> None:
+    g = strata_graph.open(str(repo))
+    pack = g.context("TaxCalculator.compute")
+    assert pack.startswith("shop.billing.tax.TaxCalculator.compute  (method,")
+    assert "return round_money(amount * RATE)" in pack
+    assert "--- called by (2) ---" in pack
+    assert len(g.context("shop.billing.invoice.Invoice", max_tokens=64)) < len(
+        g.context("shop.billing.invoice.Invoice", max_tokens=4000)
+    )
+
+
 def test_errors(repo: Path) -> None:
     g = strata_graph.open(str(repo))
     with pytest.raises(strata_graph.StrataError, match="no symbol"):

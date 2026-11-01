@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+mod mcp;
+
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -55,6 +57,16 @@ enum Cmd {
     Index,
     /// Keep the index up to date as files change (Ctrl-C to stop).
     Watch,
+    /// Serve the graph to coding agents over MCP (stdio).
+    Mcp,
+    /// Source, class, callers and callees of SYMBOL in about --max-tokens tokens.
+    Context {
+        symbol: String,
+        #[arg(long, default_value_t = 1500)]
+        max_tokens: usize,
+        #[arg(long, value_enum, default_value_t = MinTier::T0)]
+        min_tier: MinTier,
+    },
     /// Node, edge and resolution counts for the current index.
     Stats,
     /// Find symbols by qualified name, suffix or simple name.
@@ -149,7 +161,7 @@ fn print_hits(g: &Graph, hits: &[Hit], json: bool) -> Result<()> {
     if hits.is_empty() {
         println!("(none)");
     }
-    for h in hits {
+    for h in strata_graph_core::tree_order(hits) {
         let indent = "  ".repeat(h.depth.saturating_sub(1) as usize);
         let n = g.node(h.node);
         println!(
@@ -229,6 +241,19 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Watch => watch(&root, cli.json)?,
+        Cmd::Mcp => mcp::serve(&root)?,
+        Cmd::Context {
+            symbol,
+            max_tokens,
+            min_tier,
+        } => {
+            let g = load(&root, refresh)?;
+            let id = g.resolve_one(&symbol)?;
+            print!(
+                "{}",
+                strata_graph_core::context_pack(&root, &g, id, max_tokens, min_tier.into())
+            );
+        }
         Cmd::Stats => {
             let g = load(&root, refresh)?;
             println!("{}", serde_json::to_string_pretty(&g.summary())?);

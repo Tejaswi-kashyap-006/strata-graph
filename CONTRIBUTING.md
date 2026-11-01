@@ -23,7 +23,7 @@ pytest crates/strata-graph-py/tests
 
 ## Rust
 
-- Rust 2021, MSRV 1.82 (`rust-version` in the workspace `Cargo.toml`).
+- Rust 2021, MSRV 1.90 (`rust-version` in the workspace `Cargo.toml`; set by the dependencies, checked by the `msrv` CI job).
 - `#![forbid(unsafe_code)]` in the core and CLI crates. The PyO3 crate is exempt because its generated bindings use `unsafe`.
 - `#![warn(missing_docs)]` in the core crate: every public item has a doc comment.
 - No `unwrap()`, `expect()` or `panic!` on paths that handle repo content or user input. Return errors with `anyhow` context. The one deliberate exception is compiling the built-in tree-sitter queries, which are constants covered by tests.
