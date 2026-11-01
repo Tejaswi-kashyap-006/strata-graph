@@ -1,0 +1,19 @@
+[package]
+name = "strata-graph"
+description = "Command-line interface for strata-graph, the code graph for coding agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "strata-graph"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+strata-graph-core = { path = "../strata-graph-core", version = "0.1.0-alpha.0" }

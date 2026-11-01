@@ -1,0 +1,20 @@
+[package]
+name = "strata-graph-core"
+description = "Code graph engine for coding agents: parsing, resolution, storage and queries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"
+streaming-iterator = "0.1"
+ignore = "0.4"
+blake3 = "1"
+rayon = "1"

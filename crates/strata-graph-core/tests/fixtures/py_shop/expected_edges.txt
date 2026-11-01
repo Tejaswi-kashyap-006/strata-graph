@@ -1,0 +1,55 @@
+# Hand-checked edges for py_shop. Format: [!]KIND TIER SRC -> DST
+# A leading ! means the edge must NOT exist (a known false positive to guard).
+
+# containment and inheritance
+CONTAINS T2 shop.billing.invoice -> shop.billing.invoice.Invoice
+CONTAINS T2 shop.billing.invoice.Invoice -> shop.billing.invoice.Invoice.total
+INHERITS T1 shop.billing.invoice.Invoice -> shop.core.base.Model
+
+# imports, including a relative import and a package re-export
+IMPORTS T1 shop.billing.invoice -> shop.core.base
+IMPORTS T1 shop.billing.invoice -> shop.billing.tax
+IMPORTS T1 shop.api -> shop.billing.invoice
+
+# self, super(), fields typed by constructor assignment
+CALLS T1 shop.billing.invoice.Invoice.__init__ -> shop.billing.tax.TaxCalculator
+CALLS T1 shop.billing.invoice.Invoice.total -> shop.billing.invoice.Invoice.subtotal
+CALLS T1 shop.billing.invoice.Invoice.total -> shop.billing.tax.TaxCalculator.compute
+CALLS T1 shop.billing.invoice.Invoice.save -> shop.core.base.Model.save
+CALLS T1 shop.billing.invoice.Invoice.save -> shop.core.base.Model.validate
+CALLS T1 shop.billing.tax.TaxCalculator.compute -> shop.billing.tax.round_money
+CALLS T1 shop.core.base.Model.save -> shop.core.base.Model._write
+
+# re-exported class, local variable typed by constructor, override wins
+CALLS T1 shop.api.checkout -> shop.billing.invoice.Invoice
+CALLS T1 shop.api.checkout -> shop.billing.invoice.Invoice.save
+CALLS T1 shop.api.checkout -> shop.billing.invoice.Invoice.total
+!CALLS T1 shop.api.checkout -> shop.core.base.Model.save
+
+# parameter annotation through an aliased module import
+CALLS T1 shop.api.quote -> shop.billing.tax.TaxCalculator.compute
+
+# `import a.b.c` then a.b.c.X(), nested function, module-level function
+CALLS T1 shop.api.legacy -> shop.core.base.Model
+CALLS T1 shop.api.legacy -> shop.core.base.Model.validate
+CALLS T1 shop.api.legacy -> shop.api.helper_only_here
+CALLS T1 shop.api.helper_only_here -> shop.api.helper_only_here.inner
+
+# script outside any package importing from the package
+CALLS T1 report.main -> shop.api.checkout
+
+# untyped receivers: one candidate is T0, two are ambiguous
+CALLS T0 shop.views.ping -> shop.core.base.Model.pong
+CALLS T0-ambiguous shop.views.show -> shop.views.HtmlView.render
+CALLS T0-ambiguous shop.views.show -> shop.views.JsonView.render
+
+# regressions found on real repos (requests): shadowing params, builtin method names
+!CALLS T0 shop.views.show_all -> shop.billing.tax.round_money
+!CALLS T0 shop.views.touch -> shop.views.Registry.set
+
+# namespace subpackage (no __init__.py) under a regular package, as in flask/sansio
+INHERITS T1 shop.extras.audit.AuditedModel -> shop.core.base.Model
+CALLS T1 shop.extras.audit.AuditedModel.save -> shop.core.base.Model.validate
+
+# method called on a constructor call, as in requests.Request(...).prepare()
+CALLS T1 shop.api.fresh_total -> shop.billing.invoice.Invoice.total
