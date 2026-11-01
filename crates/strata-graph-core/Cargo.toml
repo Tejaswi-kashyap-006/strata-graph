@@ -18,3 +18,4 @@ streaming-iterator = "0.1"
 ignore = "0.4"
 blake3 = "1"
 rayon = "1"
+rusqlite = { version = "0.41", features = ["bundled"] }

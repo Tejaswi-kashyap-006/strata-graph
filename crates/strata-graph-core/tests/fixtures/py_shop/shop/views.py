@@ -29,3 +29,22 @@ def show_all(round_money):
 def touch(evt):
     # A builtin method name on an untyped receiver (e.g. threading.Event).
     evt.set()
+
+
+from collections import OrderedDict
+
+
+class Cache(OrderedDict):
+    def touch(self):
+        pass
+
+
+class Fake:
+    def move_to_end(self, key):
+        return key
+
+
+def cache_use(c: Cache):
+    # move_to_end is inherited from OrderedDict, outside the repo.
+    c.move_to_end("x")
+    c.touch()

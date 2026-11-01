@@ -53,3 +53,20 @@ CALLS T1 shop.extras.audit.AuditedModel.save -> shop.core.base.Model.validate
 
 # method called on a constructor call, as in requests.Request(...).prepare()
 CALLS T1 shop.api.fresh_total -> shop.billing.invoice.Invoice.total
+
+# return annotations: plain, Optional[...], X | None, string forward refs, Self
+CALLS T1 shop.billing.factory.use -> shop.billing.invoice.Invoice.total
+CALLS T1 shop.billing.factory.use -> shop.billing.invoice.Invoice.subtotal
+CALLS T1 shop.billing.factory.use -> shop.billing.invoice.Invoice.save
+CALLS T1 shop.billing.factory.Builder.run -> shop.billing.invoice.Invoice.total
+CALLS T1 shop.billing.factory.Builder.run -> shop.billing.factory.Builder.reset
+CALLS T1 shop.billing.factory.Builder.finish -> shop.billing.factory.Builder.reset
+
+# pytest fixtures (nearest conftest.py), unannotated return inference
+CALLS T1 test_billing.test_total -> shop.billing.invoice.Invoice.total
+CALLS T1 test_billing.test_reset -> shop.billing.factory.Builder.reset
+CALLS T1 shop.billing.factory.use_plain -> shop.billing.factory.Builder.reset
+
+# a method inherited from a library base class is external, not a name match
+CALLS T1 shop.views.cache_use -> shop.views.Cache.touch
+!CALLS T0 shop.views.cache_use -> shop.views.Fake.move_to_end

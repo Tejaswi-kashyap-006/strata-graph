@@ -4,8 +4,10 @@
 
 pub mod python;
 
+use serde::{Deserialize, Serialize};
+
 /// A definition as found in the syntax tree, before nesting is computed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawDef {
     pub is_class: bool,
     pub name: String,
@@ -13,9 +15,13 @@ pub struct RawDef {
     pub end_byte: usize,
     pub start_line: u32,
     pub end_line: u32,
+    /// Normalised return annotation (`-> Foo`), if any.
+    pub returns: Option<String>,
+    /// Decorated with a pytest fixture decorator.
+    pub is_fixture: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RawImport {
     /// `import a.b` (binds `a`) or `import a.b as x` (binds `x`).
     Module {
@@ -32,13 +38,13 @@ pub enum RawImport {
     Wildcard { from_module: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawImportAt {
     pub import: RawImport,
     pub line: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawCall {
     pub callee: String,
     /// Source text of the receiver for `recv.callee(...)` calls.
@@ -47,7 +53,7 @@ pub struct RawCall {
     pub line: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawBase {
     /// Start byte of the class definition that declares the base.
     pub class_byte: usize,
@@ -55,7 +61,7 @@ pub struct RawBase {
     pub line: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TypeTarget {
     /// A local, a parameter, or a class-body field.
     Var(String),
@@ -63,7 +69,7 @@ pub enum TypeTarget {
     SelfAttr(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawType {
     pub target: TypeTarget,
     /// Constructor callee or annotation text, e.g. `Foo` or `models.Foo`.
@@ -71,14 +77,21 @@ pub struct RawType {
     pub byte: usize,
 }
 
+/// An expression a function returns or yields.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawReturn {
+    pub byte: usize,
+    pub expr: String,
+}
+
 /// A name bound by a parameter, assignment, loop, `with` or `except` target.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawLocal {
     pub name: String,
     pub byte: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedFile {
     pub rel_path: String,
     pub hash: String,
@@ -89,4 +102,5 @@ pub struct ParsedFile {
     pub bases: Vec<RawBase>,
     pub types: Vec<RawType>,
     pub locals: Vec<RawLocal>,
+    pub return_values: Vec<RawReturn>,
 }

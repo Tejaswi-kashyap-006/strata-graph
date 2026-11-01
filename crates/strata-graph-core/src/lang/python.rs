@@ -7,7 +7,8 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Language, Node, Parser, Query, QueryCursor};
 
 use super::{
-    ParsedFile, RawBase, RawCall, RawDef, RawImport, RawImportAt, RawLocal, RawType, TypeTarget,
+    ParsedFile, RawBase, RawCall, RawDef, RawImport, RawImportAt, RawLocal, RawReturn, RawType,
+    TypeTarget,
 };
 
 const DEFS: &str = include_str!("../../queries/python/defs.scm");
@@ -16,6 +17,9 @@ const CALLS: &str = include_str!("../../queries/python/calls.scm");
 const INHERITS: &str = include_str!("../../queries/python/inherits.scm");
 const TYPES: &str = include_str!("../../queries/python/types.scm");
 const LOCALS: &str = include_str!("../../queries/python/locals.scm");
+const RETURNS: &str = include_str!("../../queries/python/returns.scm");
+const DECORATORS: &str = include_str!("../../queries/python/decorators.scm");
+const RETURN_VALUES: &str = include_str!("../../queries/python/return_values.scm");
 
 struct Queries {
     defs: Query,
@@ -24,6 +28,9 @@ struct Queries {
     inherits: Query,
     types: Query,
     locals: Query,
+    returns: Query,
+    decorators: Query,
+    return_values: Query,
 }
 
 fn language() -> Language {
@@ -44,6 +51,9 @@ fn queries() -> &'static Queries {
             inherits: q("inherits", INHERITS),
             types: q("types", TYPES),
             locals: q("locals", LOCALS),
+            returns: q("returns", RETURNS),
+            decorators: q("decorators", DECORATORS),
+            return_values: q("return_values", RETURN_VALUES),
         }
     })
 }
@@ -77,10 +87,50 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
                 end_byte: node.end_byte(),
                 start_line: line(*node),
                 end_line: node.end_position().row as u32 + 1,
+                returns: None,
+                is_fixture: false,
             });
         }
     });
     defs.sort_by_key(|d| (d.start_byte, std::cmp::Reverse(d.end_byte)));
+
+    // Return annotations, attached to their definitions by start byte.
+    let mut returns = std::collections::HashMap::new();
+    for_each_match(&q.returns, root, bytes, |caps| {
+        let get = |want: &str| caps.iter().find(|(n, _)| *n == want).map(|(_, nd)| *nd);
+        if let (Some(def), Some(ret)) = (get("def"), get("ret")) {
+            if let Some(t) = normalize_type(&text(ret)) {
+                returns.insert(def.start_byte(), t);
+            }
+        }
+    });
+    let mut fixtures = std::collections::HashSet::new();
+    for_each_match(&q.decorators, root, bytes, |caps| {
+        let get = |want: &str| caps.iter().find(|(n, _)| *n == want).map(|(_, nd)| *nd);
+        if let (Some(dec), Some(def)) = (get("dec"), get("def")) {
+            if text(dec).contains("fixture") {
+                fixtures.insert(def.start_byte());
+            }
+        }
+    });
+    for d in &mut defs {
+        d.returns = returns.remove(&d.start_byte);
+        d.is_fixture = fixtures.contains(&d.start_byte);
+    }
+
+    // Returned and yielded values (only shapes the resolver can use).
+    let mut return_values = Vec::new();
+    for_each_match(&q.return_values, root, bytes, |caps| {
+        if let Some((_, v)) = caps.first() {
+            let t = text(*v);
+            if t.len() <= 300 && !t.contains('\n') {
+                return_values.push(RawReturn {
+                    byte: v.start_byte(),
+                    expr: t,
+                });
+            }
+        }
+    });
 
     // Imports
     let mut imports = Vec::new();
@@ -144,8 +194,14 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
     let mut types = Vec::new();
     for_each_match(&q.types, root, bytes, |caps| {
         let get = |want: &str| caps.iter().find(|(n, _)| *n == want).map(|(_, nd)| *nd);
-        let ty = get("type.ctor").or_else(|| get("type.annot"));
-        let Some(ty) = ty else { return };
+        let ty = match (get("type.ctor"), get("type.annot")) {
+            (Some(c), _) => text(c),
+            (None, Some(a)) => match normalize_type(&text(a)) {
+                Some(t) => t,
+                None => return,
+            },
+            _ => return,
+        };
         let target = if let Some(v) = get("type.var") {
             Some((TypeTarget::Var(text(v)), v.start_byte()))
         } else if let (Some(s), Some(a)) = (get("type.self"), get("type.attr")) {
@@ -156,7 +212,7 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
         if let Some((target, byte)) = target {
             types.push(RawType {
                 target,
-                type_expr: text(ty),
+                type_expr: ty,
                 byte,
             });
         }
@@ -183,7 +239,49 @@ pub fn parse(rel_path: &str, source: &str) -> Result<ParsedFile> {
         bases,
         types,
         locals,
+        return_values,
     })
+}
+
+/// Reduce an annotation to one dotted class name, or None if it names several
+/// types or a generic container. Handles `Optional[X]`, `X | None`, `Union[X, None]`,
+/// string forward references and `Self` (returned as the literal `Self`).
+pub fn normalize_type(raw: &str) -> Option<String> {
+    let mut t = raw.trim();
+    if (t.starts_with('"') && t.ends_with('"')) || (t.starts_with('\'') && t.ends_with('\'')) {
+        t = t.get(1..t.len().saturating_sub(1))?.trim();
+    }
+    for wrapper in ["typing.Optional[", "Optional[", "t.Optional["] {
+        if let Some(inner) = t.strip_prefix(wrapper).and_then(|r| r.strip_suffix(']')) {
+            return normalize_type(inner);
+        }
+    }
+    for wrapper in ["typing.Union[", "Union[", "t.Union["] {
+        if let Some(inner) = t.strip_prefix(wrapper).and_then(|r| r.strip_suffix(']')) {
+            return single_non_none(inner.split(','));
+        }
+    }
+    if t.contains('|') {
+        return single_non_none(t.split('|'));
+    }
+    let ok = !t.is_empty()
+        && t.split('.').all(|p| {
+            let mut c = p.chars();
+            matches!(c.next(), Some(ch) if ch == '_' || ch.is_alphabetic())
+                && c.all(|ch| ch == '_' || ch.is_alphanumeric())
+        });
+    (ok && t != "None").then(|| t.to_string())
+}
+
+fn single_non_none<'a>(parts: impl Iterator<Item = &'a str>) -> Option<String> {
+    let rest: Vec<&str> = parts
+        .map(str::trim)
+        .filter(|p| *p != "None" && !p.is_empty())
+        .collect();
+    match rest.as_slice() {
+        [one] => normalize_type(one),
+        _ => None,
+    }
 }
 
 /// Run a query and hand each match's captures, as (capture name, node), to `f`.
@@ -464,6 +562,23 @@ pub const BUILTIN_METHODS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_annotations() {
+        assert_eq!(normalize_type("Foo").as_deref(), Some("Foo"));
+        assert_eq!(normalize_type("models.Foo").as_deref(), Some("models.Foo"));
+        assert_eq!(normalize_type("Optional[Foo]").as_deref(), Some("Foo"));
+        assert_eq!(normalize_type("Foo | None").as_deref(), Some("Foo"));
+        assert_eq!(
+            normalize_type("Union[None, a.Foo]").as_deref(),
+            Some("a.Foo")
+        );
+        assert_eq!(normalize_type("\"Foo\"").as_deref(), Some("Foo"));
+        assert_eq!(normalize_type("Self").as_deref(), Some("Self"));
+        assert_eq!(normalize_type("list[Foo]"), None);
+        assert_eq!(normalize_type("Foo | Bar"), None);
+        assert_eq!(normalize_type("None"), None);
+    }
 
     #[test]
     fn extracts_basic_facts() {

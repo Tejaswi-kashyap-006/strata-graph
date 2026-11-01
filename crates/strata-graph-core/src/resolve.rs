@@ -8,6 +8,7 @@
 //! three matches give T0-ambiguous edges. Anything wider is left unresolved
 //! rather than guessed.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::graph::{FileInfo, Graph};
@@ -69,7 +70,27 @@ struct Resolver {
     methods_by_name: HashMap<String, Vec<NodeId>>,
     /// Scope (function, class or module) → names bound locally in it.
     locals: HashMap<NodeId, HashSet<String>>,
+    /// Function or method → its return annotation, resolved in the enclosing scope.
+    returns: HashMap<NodeId, TypeHint>,
+    /// Function or method → expressions it returns or yields (for inference).
+    ret_exprs: HashMap<NodeId, Vec<TypeHint>>,
+    /// pytest fixture name → fixture functions with that name.
+    fixtures: HashMap<String, Vec<NodeId>>,
+    is_fixture: HashSet<NodeId>,
+    /// Classes with at least one base defined outside the repo.
+    external_based: HashSet<NodeId>,
+    /// Inferred return class per function (None = unknown or in progress).
+    infer_cache: RefCell<HashMap<NodeId, Option<NodeId>>>,
+    /// Recursion depth of expression inference, to stop cyclic hints.
+    infer_depth: Cell<u32>,
+    /// Memoised variable and field classes, keyed by (scope or class, name).
+    /// An entry is inserted as None before computing, which also breaks cycles.
+    var_cache: RefCell<HashMap<(NodeId, String), Option<NodeId>>>,
+    field_cache: RefCell<HashMap<(NodeId, String), Option<NodeId>>>,
 }
+
+/// Deepest chain of expression inference before giving up.
+const MAX_INFER_DEPTH: u32 = 12;
 
 /// Dotted module name for a repo-relative path, following `__init__.py` packages.
 fn module_name(rel: &str, package_dirs: &HashSet<String>) -> (String, bool) {
@@ -315,24 +336,209 @@ impl Resolver {
     /// Resolve a list of recorded type expressions to exactly one repo class.
     fn class_from_types(&self, hints: &[TypeHint]) -> Option<NodeId> {
         let mut classes = HashSet::new();
-        for (file, scope, expr) in hints {
-            let scope = (self.kind(*scope) != NodeKind::Module).then_some(*scope);
-            if let Res::Found(n, _) = self.resolve_dotted(*file, scope, expr) {
-                if self.kind(n) == NodeKind::Class {
-                    classes.insert(n);
-                }
+        for hint in hints {
+            if let Some(c) = self.hint_class(hint) {
+                classes.insert(c);
             }
         }
         (classes.len() == 1).then(|| *classes.iter().next().unwrap())
     }
 
+    /// The class one type hint names: an annotation, a constructor, or a call to
+    /// a function whose return type is annotated.
+    fn hint_class(&self, (file, scope, expr): &TypeHint) -> Option<NodeId> {
+        let scope = (self.kind(*scope) != NodeKind::Module).then_some(*scope);
+        if expr == "Self" {
+            return self.enclosing_class(scope);
+        }
+        self.call_value_class(*file, scope, expr)
+    }
+
+    /// The class of the value produced by calling `n`: the class itself, or the
+    /// declared return class of a function or method.
+    fn value_class(&self, n: NodeId) -> Option<NodeId> {
+        match self.kind(n) {
+            NodeKind::Class => Some(n),
+            NodeKind::Module => None,
+            NodeKind::Function | NodeKind::Method => {
+                if let Some((file, scope, expr)) = self.returns.get(&n) {
+                    let scope_opt = (self.kind(*scope) != NodeKind::Module).then_some(*scope);
+                    let c = if expr == "Self" {
+                        self.enclosing_class(Some(n))
+                    } else {
+                        match self.resolve_dotted(*file, scope_opt, expr) {
+                            Res::Found(c, _) => Some(c),
+                            _ => None,
+                        }
+                    };
+                    return c.filter(|c| self.kind(*c) == NodeKind::Class);
+                }
+                // No annotation: infer from what the function returns, if every
+                // returned value (other than None) is the same repo class.
+                if let Some(cached) = self.infer_cache.borrow().get(&n) {
+                    return *cached;
+                }
+                self.infer_cache.borrow_mut().insert(n, None);
+                let mut classes = HashSet::new();
+                let mut unknown = false;
+                for (file, _, expr) in self.ret_exprs.get(&n).into_iter().flatten() {
+                    match self.expr_class(*file, Some(n), expr) {
+                        Some(c) => {
+                            classes.insert(c);
+                        }
+                        None => unknown = true,
+                    }
+                }
+                let out = (classes.len() == 1 && !unknown).then(|| *classes.iter().next().unwrap());
+                self.infer_cache.borrow_mut().insert(n, out);
+                out
+            }
+        }
+    }
+
+    /// Class of the value an expression evaluates to, where syntax allows:
+    /// `self`, typed variables and fields, pytest fixtures, and calls to
+    /// classes or functions with a known return class.
+    fn expr_class(&self, file: usize, scope: Option<NodeId>, expr: &str) -> Option<NodeId> {
+        let d = self.infer_depth.get();
+        if d >= MAX_INFER_DEPTH {
+            return None;
+        }
+        self.infer_depth.set(d + 1);
+        let out = self.expr_class_inner(file, scope, expr.trim());
+        self.infer_depth.set(d);
+        out
+    }
+
+    fn expr_class_inner(&self, file: usize, scope: Option<NodeId>, expr: &str) -> Option<NodeId> {
+        if expr == "self" || expr == "cls" {
+            return self.enclosing_class(scope);
+        }
+        if let Some(head) = single_call_callee(expr) {
+            return self.call_value_class(file, scope, head);
+        }
+        if !is_dotted_ident(expr) {
+            return None;
+        }
+        if !expr.contains('.') {
+            return self.var_class(file, scope, expr);
+        }
+        if let Some(field) = expr.strip_prefix("self.").filter(|f| !f.contains('.')) {
+            return self
+                .enclosing_class(scope)
+                .and_then(|c| self.field_class(c, field));
+        }
+        None
+    }
+
+    /// Class of the value returned by calling `head` (a dotted callee).
+    fn call_value_class(&self, file: usize, scope: Option<NodeId>, head: &str) -> Option<NodeId> {
+        match self.resolve_head(file, scope, head) {
+            Res::Found(n, _) => return self.value_class(n),
+            Res::External => return None,
+            Res::Local | Res::NotFound => {}
+        }
+        let (recv, method) = head.rsplit_once('.')?;
+        let rc = self.expr_class(file, scope, recv)?;
+        let target = self.mro_lookup(rc, method)?;
+        self.value_class(target)
+    }
+
+    /// The pytest fixture a parameter named `name` receives in `file`:
+    /// one in the same module first, else the nearest enclosing conftest.py.
+    fn pick_fixture(&self, file: usize, name: &str) -> Option<NodeId> {
+        let cands = self.fixtures.get(name)?;
+        let here = &self.nodes[self.files[file].module as usize].file;
+        if let Some(c) = cands
+            .iter()
+            .find(|c| &self.nodes[**c as usize].file == here)
+        {
+            return Some(*c);
+        }
+        let dir_of = |p: &str| {
+            p.rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default()
+        };
+        let here_dir = dir_of(here);
+        cands
+            .iter()
+            .filter_map(|c| {
+                let f = &self.nodes[*c as usize].file;
+                if !(f == "conftest.py" || f.ends_with("/conftest.py")) {
+                    return None;
+                }
+                let d = dir_of(f);
+                let visible =
+                    d.is_empty() || here_dir == d || here_dir.starts_with(&format!("{d}/"));
+                visible.then_some((d.len(), *c))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, c)| c)
+    }
+
+    fn has_external_ancestor(&self, class: NodeId) -> bool {
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([class]);
+        while let Some(c) = queue.pop_front() {
+            if !seen.insert(c) || seen.len() > 64 {
+                continue;
+            }
+            if self.external_based.contains(&c) {
+                return true;
+            }
+            queue.extend(self.bases.get(&c).into_iter().flatten().copied());
+        }
+        false
+    }
+
+    /// Resolve the callee of a call expression: `self.m` / `cls.m` through the
+    /// enclosing class, anything else as a dotted name.
+    fn resolve_head(&self, file: usize, scope: Option<NodeId>, head: &str) -> Res {
+        for prefix in ["self.", "cls."] {
+            if let Some(m) = head.strip_prefix(prefix).filter(|m| !m.contains('.')) {
+                return match self
+                    .enclosing_class(scope)
+                    .and_then(|c| self.mro_lookup(c, m))
+                {
+                    Some(found) => Res::Found(found, Tier::Scoped),
+                    None => Res::NotFound,
+                };
+            }
+        }
+        self.resolve_dotted(file, scope, head)
+    }
+
     /// Class of a variable visible from `scope`, from type hints in enclosing scopes.
     fn var_class(&self, file: usize, scope: Option<NodeId>, var: &str) -> Option<NodeId> {
+        let key = (scope.unwrap_or(self.files[file].module), var.to_string());
+        if let Some(hit) = self.var_cache.borrow().get(&key) {
+            return *hit;
+        }
+        self.var_cache.borrow_mut().insert(key.clone(), None);
+        let out = self.var_class_uncached(file, scope, var);
+        self.var_cache.borrow_mut().insert(key, out);
+        out
+    }
+
+    fn var_class_uncached(&self, file: usize, scope: Option<NodeId>, var: &str) -> Option<NodeId> {
         let mut s = scope;
         while let Some(id) = s {
             if matches!(self.kind(id), NodeKind::Function | NodeKind::Method) {
                 if let Some(h) = self.local_types.get(&(id, var.to_string())) {
                     return self.class_from_types(h);
+                }
+                if self.locals.get(&id).is_some_and(|l| l.contains(var)) {
+                    // An untyped parameter of a test or fixture is a pytest fixture.
+                    let is_test = self.nodes[id as usize].name.starts_with("test");
+                    if is_test || self.is_fixture.contains(&id) {
+                        if let Some(f) = self.pick_fixture(file, var) {
+                            if f != id {
+                                return self.value_class(f);
+                            }
+                        }
+                    }
+                    return None;
                 }
             }
             s = self.nodes[id as usize].parent;
@@ -344,6 +550,17 @@ impl Resolver {
     }
 
     fn field_class(&self, class: NodeId, field: &str) -> Option<NodeId> {
+        let key = (class, field.to_string());
+        if let Some(hit) = self.field_cache.borrow().get(&key) {
+            return *hit;
+        }
+        self.field_cache.borrow_mut().insert(key.clone(), None);
+        let out = self.field_class_uncached(class, field);
+        self.field_cache.borrow_mut().insert(key, out);
+        out
+    }
+
+    fn field_class_uncached(&self, class: NodeId, field: &str) -> Option<NodeId> {
         let mut seen = HashSet::new();
         let mut queue = VecDeque::from([class]);
         while let Some(c) = queue.pop_front() {
@@ -396,59 +613,48 @@ impl Resolver {
             return Err(());
         }
 
-        if recv == "self" || recv == "cls" {
-            if let Some(class) = self.enclosing_class(scope) {
-                if let Some(m) = self.mro_lookup(class, callee) {
-                    return Ok(vec![(m, Tier::Scoped)]);
-                }
-            }
-        } else if recv.starts_with("super(") {
+        if recv.starts_with("super(") {
             if let Some(class) = self.enclosing_class(scope) {
                 for b in self.bases.get(&class).into_iter().flatten() {
                     if let Some(m) = self.mro_lookup(*b, callee) {
                         return Ok(vec![(m, Tier::Scoped)]);
                     }
                 }
-            }
-        } else if let Some(field) = recv
-            .strip_prefix("self.")
-            .filter(|f| is_dotted_ident(f) && !f.contains('.'))
-        {
-            if let Some(class) = self.enclosing_class(scope) {
-                if let Some(fc) = self.field_class(class, field) {
-                    if let Some(m) = self.mro_lookup(fc, callee) {
-                        return Ok(vec![(m, Tier::Scoped)]);
-                    }
+                if self.has_external_ancestor(class) {
+                    return Err(());
                 }
             }
-        } else if let Some(ctor) = single_call_callee(recv) {
-            // `Foo(...).bar()`: the receiver is a fresh instance of Foo.
-            if let Res::Found(n, t) = self.resolve_dotted(file, scope, ctor) {
-                if self.kind(n) == NodeKind::Class {
-                    if let Some(m) = self.mro_lookup(n, callee) {
-                        return Ok(vec![(m, t)]);
-                    }
-                }
-            }
-        } else if is_dotted_ident(recv) {
-            if !recv.contains('.') {
-                if let Some(class) = self.var_class(file, scope, recv) {
-                    if let Some(m) = self.mro_lookup(class, callee) {
-                        return Ok(vec![(m, Tier::Scoped)]);
-                    }
-                }
-            }
-            match self.resolve_dotted(file, scope, recv) {
-                Res::Found(n, t) => match self.kind(n) {
-                    NodeKind::Module | NodeKind::Class => {
+        } else {
+            // A module or class object: `pkg.mod.f()`, `Model.create()`.
+            if is_dotted_ident(recv)
+                && recv != "self"
+                && recv != "cls"
+                && !recv.starts_with("self.")
+            {
+                match self.resolve_dotted(file, scope, recv) {
+                    Res::Found(n, t)
+                        if matches!(self.kind(n), NodeKind::Module | NodeKind::Class) =>
+                    {
                         if let Some(m) = self.member(n, callee, 0) {
                             return Ok(vec![(m, t)]);
                         }
+                        if self.kind(n) == NodeKind::Class && self.has_external_ancestor(n) {
+                            return Err(());
+                        }
                     }
+                    Res::External => return Err(()),
                     _ => {}
-                },
-                Res::External => return Err(()),
-                Res::Local | Res::NotFound => {}
+                }
+            }
+            // An instance whose class can be inferred.
+            if let Some(class) = self.expr_class(file, scope, recv) {
+                if let Some(m) = self.mro_lookup(class, callee) {
+                    return Ok(vec![(m, Tier::Scoped)]);
+                }
+                if self.has_external_ancestor(class) {
+                    // Inherited from a library base class: not in this repo.
+                    return Err(());
+                }
             }
         }
 
@@ -488,6 +694,9 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
     let mut children: HashMap<NodeId, HashMap<String, NodeId>> = HashMap::new();
     let mut def_at: HashMap<(usize, usize), NodeId> = HashMap::new();
     let mut module_meta = Vec::with_capacity(parsed.len());
+    let mut returns: HashMap<NodeId, TypeHint> = HashMap::new();
+    let mut fixtures: HashMap<String, Vec<NodeId>> = HashMap::new();
+    let mut is_fixture: HashSet<NodeId> = HashSet::new();
 
     // 1. Nodes and containment.
     for (fi, pf) in parsed.iter().enumerate() {
@@ -555,6 +764,13 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
                     line: d.start_line,
                 },
             );
+            if let Some(ret) = &d.returns {
+                returns.insert(id, (fi, parent, ret.clone()));
+            }
+            if d.is_fixture && !d.is_class {
+                fixtures.entry(d.name.clone()).or_default().push(id);
+                is_fixture.insert(id);
+            }
             spans.push((d.start_byte, d.end_byte, id));
             def_at.insert((fi, d.start_byte), id);
             stack.push((d.end_byte, id));
@@ -644,7 +860,32 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
         callables_by_name,
         methods_by_name,
         locals: HashMap::new(),
+        returns,
+        ret_exprs: HashMap::new(),
+        fixtures,
+        is_fixture,
+        external_based: HashSet::new(),
+        infer_cache: RefCell::new(HashMap::new()),
+        infer_depth: Cell::new(0),
+        var_cache: RefCell::new(HashMap::new()),
+        field_cache: RefCell::new(HashMap::new()),
     };
+
+    for (fi, pf) in parsed.iter().enumerate() {
+        for rv in &pf.return_values {
+            if rv.expr == "None" {
+                continue;
+            }
+            if let Some(scope) = r.files[fi].innermost(rv.byte) {
+                if matches!(r.kind(scope), NodeKind::Function | NodeKind::Method) {
+                    r.ret_exprs
+                        .entry(scope)
+                        .or_default()
+                        .push((fi, scope, rv.expr.clone()));
+                }
+            }
+        }
+    }
 
     for (fi, pf) in parsed.iter().enumerate() {
         for l in &pf.locals {
@@ -699,6 +940,9 @@ pub fn build(mut parsed: Vec<ParsedFile>) -> Graph {
                 }
                 other => other,
             };
+            if res == Res::External {
+                r.external_based.insert(class);
+            }
             if let Res::Found(base, tier) = res {
                 if r.kind(base) == NodeKind::Class && base != class {
                     r.bases.entry(class).or_default().push(base);

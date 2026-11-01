@@ -18,20 +18,20 @@
 ; x: Foo = ...   and   x: Foo   (class fields in dataclasses, locals)
 (assignment
   left: (identifier) @type.var
-  type: (type [(identifier) (attribute)] @type.annot))
+  type: (type) @type.annot)
 
 ; self.x: Foo = ...
 (assignment
   left: (attribute
     object: (identifier) @type.self
     attribute: (identifier) @type.attr)
-  type: (type [(identifier) (attribute)] @type.annot))
+  type: (type) @type.annot)
 
 ; def f(x: Foo)  and  def f(x: Foo = None)
 (typed_parameter
   (identifier) @type.var
-  type: (type [(identifier) (attribute)] @type.annot))
+  type: (type) @type.annot)
 
 (typed_default_parameter
   name: (identifier) @type.var
-  type: (type [(identifier) (attribute)] @type.annot))
+  type: (type) @type.annot)
