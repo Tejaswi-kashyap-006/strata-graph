@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/strata-graph-core", "crates/strata-graph"]
+members = ["crates/strata-graph-core", "crates/strata-graph", "crates/strata-graph-py"]
 resolver = "2"
 
 [workspace.package]

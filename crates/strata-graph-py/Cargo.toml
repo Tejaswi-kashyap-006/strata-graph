@@ -1,0 +1,25 @@
+[package]
+name = "strata-graph-py"
+description = "Python bindings for strata-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+pyo3 = { version = "0.30", features = ["abi3-py39"] }
+strata-graph-core = { path = "../strata-graph-core" }

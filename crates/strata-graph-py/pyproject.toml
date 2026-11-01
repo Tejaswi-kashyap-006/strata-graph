@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "strata-graph"
+description = "A code graph for coding agents: who calls what, and how sure the answer is"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "Tejaswi Kashyap" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries",
+    "Intended Audience :: Developers",
+]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/Tejaswi-kashyap-006/strata-graph"
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "strata_graph._native"
+features = ["extension-module"]
