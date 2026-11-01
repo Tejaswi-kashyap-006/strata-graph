@@ -5,6 +5,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 ## Unreleased
 
 ### Added
+- Localization eval harness (`eval/`): SWE-bench Verified tasks with gold files and functions from the real fix, a sandboxed agent on the OpenAI API, arms A–D through the shipped hook and MCP server, a resumable runner with a spending cap, paired bootstrap scoring and a leak audit.
 - Delivery density: `full`, `capped`, `inverse` and `auto` (picked from the repo's call out-degree). Calls to hubs are counted, not named; test callers and subclasses are counted after real code. `strata-graph annotate`, `Graph.annotate` and `Graph.shape` in Python, `--density` on the hook, and a `delivery` section in `stats`.
 - TypeScript interfaces are their own node kind (`interface`), so delivery says "implemented by" and classes say "constructed by".
 - The index is stamped with fingerprints of the parser and resolver sources: an index written by a different build is re-parsed or re-resolved automatically, with no revision number to bump by hand. `needs_update()` reports it.

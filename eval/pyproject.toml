@@ -1,0 +1,32 @@
+[project]
+name = "strata-eval"
+version = "0.1.0"
+description = "Localization eval for strata-graph: the same agent with and without the graph"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "Tejaswi Kashyap" }]
+dependencies = ["openai>=1.40", "datasets>=2.19"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["strata_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+
+[tool.mypy]
+# Checked at the running interpreter's version, like the SDK; ruff's py310 target and
+# the 3.10 CI job keep the code 3.10-compatible.
+strict = true
+
+[[tool.mypy.overrides]]
+# `datasets` ships no type information; only `load_rows` touches it.
+module = ["datasets", "datasets.*"]
+ignore_missing_imports = true

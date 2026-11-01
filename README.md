@@ -113,6 +113,10 @@ Calls that match more than three definitions, hit an untyped local, use a builti
 
 When strata-graph is upgraded, an existing index is re-resolved automatically; parsed files are reused.
 
+## Eval
+
+`eval/` holds the localization eval: the same OpenAI-backed agent on SWE-bench Verified issues, without strata-graph (arm A), with its MCP tools (B), with its hooks (C) or with both (D). It measures File@k and Func@k, tokens, cost and consistency across seeds, with paired confidence intervals. See [eval/README.md](eval/README.md) for setup, a pilot run and a 500-run plan.
+
 ## Layout
 
 | Path | What it is |

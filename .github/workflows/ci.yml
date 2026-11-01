@@ -79,6 +79,28 @@ jobs:
       - name: mypy --strict
         run: mypy --strict tools crates/strata-graph-py/python/strata_graph
 
+  eval:
+    name: eval harness (Python 3.10 and 3.13)
+    strategy:
+      matrix:
+        python: ["3.10", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: cargo build --release -p strata-graph
+      - run: python -m pip install -e "eval[dev]" mypy
+      - name: mypy (strict, from eval/pyproject.toml)
+        working-directory: eval
+        run: mypy strata_eval tests
+      - name: Tests (scripted model, real strata-graph binary)
+        working-directory: eval
+        run: python -m pytest -q
+
   audit:
     runs-on: ubuntu-latest
     steps:
